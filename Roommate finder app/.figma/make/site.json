@@ -1,0 +1,10 @@
+{
+  "description": "Compare housing options for two people by inputting work locations and budgets, then explore listings on a map with commute routes to each workplace.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
