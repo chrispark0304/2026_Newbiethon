@@ -55,8 +55,15 @@ async def lifespan(app: FastAPI):
     state["router"] = CommuteRouter()
     state["listings"] = RtmsListings()
     state["kakao"] = KakaoTransit()
-    log.info("그래프 %d노드 / 매물 %d건 / 통근 출처 %s (카카오 %s)",
-             state["router"].g.n_nodes, len(state["listings"].all()), COMMUTE_PROVIDER,
+    # 최근접 역은 매물당 한 번만 구하면 되므로 기동 시 전부 계산해 둔다.
+    # 결과 카드 표시에도 쓰고, 결과 쏠림을 막는 그룹 키로도 쓴다.
+    state["stations"] = {
+        l.id: _nearest_station(state["router"], l.lat, l.lon)
+        for l in state["listings"].all()
+    }
+    log.info("그래프 %d노드 / 매물 %d건(좌표없어 제외 %d) / 통근 출처 %s (카카오 %s)",
+             state["router"].g.n_nodes, len(state["listings"].all()),
+             state["listings"].skipped, COMMUTE_PROVIDER,
              "사용 가능" if state["kakao"].enabled else "키 없음")
     yield
     state.clear()
@@ -79,6 +86,7 @@ def health():
         "stops": r.g.n_stops if r else 0,
         "listings": len(state["listings"].all()) if state.get("listings") else 0,
         "coords": state["listings"].coord_stats if state.get("listings") else None,
+        "skipped_no_coords": state["listings"].skipped if state.get("listings") else 0,
         "commute_provider": COMMUTE_PROVIDER,
         "kakao": state["kakao"].stats() if state.get("kakao") else None,
     }
@@ -173,20 +181,31 @@ def search(req: SearchRequest):
     stats["after_commute"] = len(scored)
     scored.sort(key=lambda x: -x[3].joint)
 
-    # ④ 다양성 제한 — 같은 건물·같은 동네가 목록을 덮는 걸 막는다
-    if req.max_per_building or req.max_per_hood:
+    # ④ 다양성 제한 — 같은 건물·같은 지역이 목록을 덮는 걸 막는다
+    if req.max_per_building or req.max_per_group:
+        stations = state["stations"]
+
+        def group_key(l):
+            if req.group_by == "dong":
+                return l.dong or l.hood
+            if req.group_by == "gu":
+                return l.gu
+            st = stations.get(l.id)
+            return st.name if st else (l.dong or l.hood)
+
         per_building: dict[tuple, int] = {}
-        per_hood: dict[str, int] = {}
+        per_group: dict[str, int] = {}
         kept = []
         for row in scored:
             l = row[0]
             bkey = (l.address, l.building)
+            gkey = group_key(l)
             if req.max_per_building and per_building.get(bkey, 0) >= req.max_per_building:
                 continue
-            if req.max_per_hood and per_hood.get(l.hood, 0) >= req.max_per_hood:
+            if req.max_per_group and per_group.get(gkey, 0) >= req.max_per_group:
                 continue
             per_building[bkey] = per_building.get(bkey, 0) + 1
-            per_hood[l.hood] = per_hood.get(l.hood, 0) + 1
+            per_group[gkey] = per_group.get(gkey, 0) + 1
             kept.append(row)
             if len(kept) >= req.top:
                 break
@@ -225,13 +244,13 @@ def search(req: SearchRequest):
     results = []
     for l, commutes, minutes, score in scored:
         results.append(ListingResult(
-            id=l.id, hood=l.hood, desc=l.desc, lat=l.lat, lon=l.lon,
+            id=l.id, hood=l.hood, gu=l.gu, dong=l.dong, desc=l.desc, lat=l.lat, lon=l.lon,
             coord_source=l.coord_source,
             rent_total=l.rent_total, rooms=l.rooms, area_total=l.area_total,
             lease_type=l.lease_type, deposit=l.deposit, monthly_rent=l.monthly_rent,
             area_sqm=l.area_sqm, address=l.address, building=l.building,
             floor=l.floor, built_year=l.built_year,
-            nearest_station=_nearest_station(router, l.lat, l.lon),
+            nearest_station=state["stations"].get(l.id),
             commute=[
                 _person_commute(p, c, minutes[i], refined.get((l.lat, l.lon, i)),
                                 req.include_legs)

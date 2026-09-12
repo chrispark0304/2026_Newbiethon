@@ -30,12 +30,18 @@ import collections
 import csv
 import io
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-RTMS_CSV = PROJECT_ROOT / "rtms_같이살집_최종_202608.csv"
+
+#: 기본 매물 원본. LISTINGS_CSV 환경변수로 바꿀 수 있다.
+#: 서울 전역본(rtms_연립다세대_전월세_서울_202608.csv)에는 `동네`·`위도`·`경도` 컬럼이 없고
+#: 주소만 있으므로, 좌표는 전적으로 지오코딩 캐시에서 온다.
+RTMS_CSV = Path(os.environ.get(
+    "LISTINGS_CSV", PROJECT_ROOT / "rtms_연립다세대_전월세_서울_202608.csv"))
 
 #: 지번주소 → 좌표 캐시. 카카오 로컬 search/address 결과를 저장해 둔 것.
 #: 갱신은 `python -m api.geocode_listings`.
@@ -74,6 +80,9 @@ class Listing:
     rooms: list[int] = field(default_factory=list)
     #: address = 지번주소 지오코딩 / hood = 동네 대표점 폴백
     coord_source: str = "hood"
+    #: 자치구 / 법정동. 시군구 컬럼에서 파싱한다.
+    gu: str = ""
+    dong: str = ""
 
     # --- 원본 값 (화면 표시용) ---
     lease_type: str = ""          # 전세 | 월세
@@ -119,6 +128,7 @@ class RtmsListings:
         self.path = Path(path)
         self.conversion_rate = conversion_rate
         self._coords = self._load_coords(Path(address_coords))
+        self.skipped = 0
         self._items = self._load()
 
     @staticmethod
@@ -136,6 +146,15 @@ class RtmsListings:
         c = collections.Counter(l.coord_source for l in self._items)
         return {"address": c["address"], "hood": c["hood"]}
 
+    @staticmethod
+    def _split_sigungu(raw: str) -> tuple[str, str]:
+        """'서울특별시 송파구 문정동' → ('송파구', '문정동')"""
+        parts = (raw or "").split()
+        gu = next((p for p in parts if p.endswith(("구", "시", "군"))
+                   and p not in ("서울특별시",)), "")
+        dong = parts[-1] if parts else ""
+        return gu, dong
+
     def _load(self) -> list[Listing]:
         blob = self.path.read_bytes()
         for enc in ("utf-8-sig", "cp949"):
@@ -149,15 +168,20 @@ class RtmsListings:
 
         out: list[Listing] = []
         for i, row in enumerate(csv.DictReader(io.StringIO(text))):
-            lat, lon = _num(row["위도"]), _num(row["경도"])
-            address = ((row.get("시군구") or "").strip() + " "
-                       + (row.get("번지") or "").strip()).strip()
-            # 지번주소 지오코딩이 있으면 그쪽을 쓴다. 대표점은 폴백일 뿐이다.
+            sigungu = (row.get("시군구") or "").strip()
+            address = (sigungu + " " + (row.get("번지") or "").strip()).strip()
+            gu, dong = self._split_sigungu(sigungu)
+
+            # 지번주소 지오코딩이 1순위. 원본 위도·경도(동네 대표점)는 폴백일 뿐이고,
+            # 서울 전역본에는 아예 없다.
             geo = self._coords.get(address)
-            coord_source = "hood"
             if geo:
                 lat, lon, coord_source = geo[0], geo[1], "address"
+            else:
+                lat, lon = _num(row.get("위도")), _num(row.get("경도"))
+                coord_source = "hood"
             if not (lat and lon):
+                self.skipped += 1          # 좌표를 못 구한 매물. 지오코딩을 돌리면 줄어든다.
                 continue
             area = _num(row["전용면적(㎡)"])
             deposit = int(_num(row["보증금(만원)"]))
@@ -172,9 +196,9 @@ class RtmsListings:
                                 f"{area:.0f}㎡" if area else "") if b]
             out.append(Listing(
                 id=f"rtms-{i:05d}",
-                hood=(row.get("동네") or "").strip(),
+                hood=(row.get("동네") or "").strip() or dong,
                 desc=" · ".join(bits) or "연립다세대",
-                lat=lat, lon=lon, coord_source=coord_source,
+                lat=lat, lon=lon, coord_source=coord_source, gu=gu, dong=dong,
                 rent_total=round(converted),
                 rooms=[round(area * ROOM_SPLIT[0]), round(area * ROOM_SPLIT[1])],
                 lease_type=lease, deposit=deposit, monthly_rent=monthly,
@@ -195,6 +219,7 @@ class SeedListings(RtmsListings):
     def __init__(self, path: Path = Path(__file__).resolve().parent / "data" / "listings.seed.json"):
         import json
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        self.skipped = 0
         self._items = [
             Listing(rent_total=r["rent_total"], area_sqm=sum(r["rooms"]), **{
                 k: v for k, v in r.items() if k not in ("rent_total",)

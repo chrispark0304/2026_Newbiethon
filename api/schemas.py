@@ -3,7 +3,7 @@
 첫 화면이 보내는 것: 사람 2명의 직장 좌표 + 가격 범위 + 면적 범위.
 """
 from __future__ import annotations
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -41,8 +41,13 @@ class SearchRequest(BaseModel):
     top: Annotated[int, Field(ge=1, le=100)] = 20
     #: 한 건물에서 최대 몇 건까지 보여 줄지. 실거래가는 호실별로 여러 건이 잡힌다. 0이면 제한 없음
     max_per_building: Annotated[int, Field(ge=0, le=20)] = 1
-    #: 한 동네에서 최대 몇 건까지. 결과가 한 동네로 쏠리는 걸 막는다. 0이면 제한 없음
-    max_per_hood: Annotated[int, Field(ge=0, le=50)] = 0
+    #: 결과 쏠림을 막을 그룹 기준.
+    #:   station = 최근접 역 (기본). 통근이 축인 서비스라 이게 가장 자연스럽다
+    #:   dong    = 법정동 (296개). 잘아서 결과가 한 동에 몰릴 수 있다
+    #:   gu      = 자치구 (25개). 굵어서 구 안의 통근 편차가 묻힌다
+    group_by: Literal["station", "dong", "gu"] = "station"
+    #: 한 그룹에서 최대 몇 건까지. 0이면 제한 없음
+    max_per_group: Annotated[int, Field(ge=0, le=50)] = 0
     #: 항목별 가중치 덮어쓰기 (price / area / commute)
     weights: dict[str, float] | None = None
     #: 경로 상세(환승 구간)를 포함할지
@@ -89,7 +94,10 @@ class Assignment(BaseModel):
 
 class ListingResult(BaseModel):
     id: str
+    #: 표시용 지역명. 원본에 `동네`가 있으면 그것, 없으면 법정동.
     hood: str
+    gu: str = ""
+    dong: str = ""
     desc: str
     lat: float
     lon: float
