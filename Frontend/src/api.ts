@@ -130,6 +130,9 @@ export type PersonQuery = {
   areaMax: number
 }
 
+/** 목록 정렬 기준. 백엔드에서 자르기 전에 적용되므로 재요청이 필요하다. */
+export type SortBy = 'recommended' | 'balanced' | 'price' | 'commute' | 'area'
+
 export type SearchResult = {
   listings: Listing[]
   /** 조건에 맞는 전체 개수. listings는 limit만큼만 잘린 앞부분이다. */
@@ -141,13 +144,14 @@ export async function searchListings(
   p2: PersonQuery,
   /** 오류 문구에 쓸 직장 표시명. "'판교' 주변에 지하철역이 없어요" 처럼 쓰인다. */
   names?: { p1Name: string; p2Name: string },
+  sortBy: SortBy = 'recommended',
   // 구 단위 클러스터링이 들어가면서 마커를 더 받아도 화면이 버틴다(origin/main).
   limit = 150,
 ): Promise<SearchResult> {
   const { data, headers } = await jsonWithHeaders<Listing[]>(`${BASE}/api/listings/search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ p1, p2, limit, ...names }),
+    body: JSON.stringify({ p1, p2, limit, sortBy, ...names }),
   })
   const total = Number(headers.get('X-Total-Matched'))
   return { listings: data, total: Number.isFinite(total) && total > 0 ? total : data.length }

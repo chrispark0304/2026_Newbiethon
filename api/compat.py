@@ -16,6 +16,7 @@ import urllib.request
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel, Field
+from typing import Literal
 
 from transit.router import INF
 
@@ -91,6 +92,18 @@ class PersonCriteria(BaseModel):
     areaMax: float = Field(default=1e9)
 
 
+#: 목록 정렬 기준. 다양성 제한·limit보다 **먼저** 적용해야 한다.
+#: 잘라낸 뒤 프론트에서 다시 정렬하면 "추천 150건 중 싼 것"이지 "제일 싼 것"이 아니다.
+#: 각 기준은 동점일 때 추천 점수로 되돌아간다 — 같은 가격이면 더 나은 집이 위로.
+SORTS = {
+    "recommended": lambda r: (-r[0],),                       # 종합 추천
+    "balanced":    lambda r: (-r[3], -r[0]),                 # 통근시간이 고른 순
+    "price":       lambda r: (r[2].rent_total, -r[0]),       # 환산월세 싼 순
+    "commute":     lambda r: (max(r[1]), -r[0]),             # 더 오래 걸리는 쪽이 짧은 순
+    "area":        lambda r: (-r[2].area_sqm, -r[0]),        # 넓은 순
+}
+
+
 class SearchBody(BaseModel):
     p1: PersonCriteria
     p2: PersonCriteria
@@ -100,6 +113,8 @@ class SearchBody(BaseModel):
     limit: int = Field(default=100, ge=1, le=300)
 
     # --- 아래는 명세 밖. 프론트가 안 보내면 기본값으로 동작한다 ---
+    #: 목록 정렬 기준. SORTS 참조.
+    sortBy: Literal["recommended", "balanced", "price", "commute", "area"] = "recommended"
     #: 더 오래 걸리는 쪽 통근이 이 값을 넘으면 제외. 0이면 제한 없음.
     commuteLimitMin: int = Field(default=60, ge=0, le=180)
     #: 같은 건물 최대 노출 수. 실거래가는 호실별로 여러 건이 잡힌다. 0이면 제한 없음.
@@ -183,7 +198,7 @@ def listings_search(body: SearchBody, response: Response):
         score = evaluate(l, minutes, price, (area[0], area[1]))
         out.append((score.joint, minutes, l, score.balance))
 
-    out.sort(key=lambda x: -x[0])
+    out.sort(key=SORTS[body.sortBy])
     total_matched = len(out)          # 다양성 제한·limit으로 자르기 전 개수
 
     # 같은 건물·같은 동네가 목록을 덮는 걸 막는다. 상위 60건이 11개 동에 몰리던 문제.

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, Fragment } from 'react'
 import { fetchCommute, searchListings } from './api'
-import type { ApiStop, Commute, Listing, PathSegment } from './api'
+import type { ApiStop, Commute, Listing, PathSegment, SortBy } from './api'
 
 type LatLng = { lat: number; lng: number }
 
@@ -426,6 +426,42 @@ function WorkMarker({ map, lat, lng, color, label }: { map: any; lat: number; ln
 // An inline notice for things the user can fix (conflicting conditions, a backend
 // that isn't running). Warm brick rather than alarm red — nothing here is broken,
 // the form just needs another pass.
+const SORT_TABS: { key: SortBy; label: string; hint: string }[] = [
+  { key: 'recommended', label: '추천', hint: '가격·면적·통근을 함께 본 종합 점수' },
+  { key: 'commute', label: '통근', hint: '더 오래 걸리는 쪽이 짧은 순' },
+  { key: 'balanced', label: '공평', hint: '두 사람 통근시간이 비슷한 순' },
+  { key: 'price', label: '가격', hint: '월 부담액이 적은 순' },
+  { key: 'area', label: '넓이', hint: '전용면적이 넓은 순' },
+]
+
+// 정렬은 백엔드에서 자르기 전에 적용된다. 받아 온 목록을 다시 정렬하면
+// "추천 150건 중 싼 것"이 되어 "제일 싼 것"과 다르다.
+function SortTabs({ value, onChange, disabled }: {
+  value: SortBy; onChange: (v: SortBy) => void; disabled: boolean
+}) {
+  return (
+    <div className="sticky top-0 z-10 flex gap-0.5 border-b border-[#ede9e2] bg-white/95 px-2 py-2 backdrop-blur-sm">
+      {SORT_TABS.map(t => (
+        <button
+          key={t.key}
+          type="button"
+          title={t.hint}
+          disabled={disabled}
+          aria-pressed={value === t.key}
+          onClick={() => value !== t.key && onChange(t.key)}
+          className={`flex-1 rounded-lg py-1.5 text-[12px] transition-colors disabled:opacity-50 ${
+            value === t.key
+              ? 'bg-[#2d2a24] font-600 text-white'
+              : 'text-[#888] hover:bg-[#f5f2ed] hover:text-[#2d2a24]'
+          }`}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function Notice({ children }: { children: React.ReactNode }) {
   return (
     <div
@@ -700,10 +736,11 @@ function PriceBubble({ p, map, hovered, onSelect, setHovered }: {
 }
 
 // Screen 2
-function MapScreen({ cond, setCond, onSelect, onHome, workCoords, onPickWork, listings, total, loading, error }: {
+function MapScreen({ cond, setCond, onSelect, onHome, workCoords, onPickWork, listings, total, loading, error, sortBy, onSortChange }: {
   cond: Conditions; setCond: (c: Conditions) => void; onSelect: (id: number) => void; onHome: () => void; workCoords: { p1: LatLng; p2: LatLng }
   onPickWork: (key: 'p1Work' | 'p2Work', text: string, coord: LatLng) => void
   listings: Listing[]; total: number; loading: boolean; error: string | null
+  sortBy: SortBy; onSortChange: (v: SortBy) => void
 }) {
   const [hovered, setHovered] = useState<number | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -739,6 +776,7 @@ function MapScreen({ cond, setCond, onSelect, onHome, workCoords, onPickWork, li
 
       <div className="flex-1 flex overflow-hidden">
         <aside className="w-[240px] border-r border-[#ede9e2] overflow-y-auto scroll-hide flex-shrink-0 bg-white">
+          <SortTabs value={sortBy} onChange={onSortChange} disabled={loading} />
           {error && <div className="p-3"><Notice>{error}</Notice></div>}
           {!error && !loading && listings.length === 0 && (
             <p className="px-4 py-6 text-[13px] leading-relaxed text-[#999]">
@@ -985,6 +1023,7 @@ export default function App() {
   })
   const [listings, setListings] = useState<Listing[]>([])
   const [total, setTotal] = useState(0)
+  const [sortBy, setSortBy] = useState<SortBy>('recommended')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [workCoords, setWorkCoords] = useState<{ p1: LatLng; p2: LatLng }>({ p1: DEFAULT_P1_COORD, p2: DEFAULT_P2_COORD })
@@ -1022,7 +1061,7 @@ export default function App() {
   }, [kakaoReady, cond.p1Work, cond.p2Work])
 
   /** 직장 좌표 + 조건으로 매물을 검색한다. 직장 텍스트는 이미 카카오 SDK가 좌표로 바꿔 놨다. */
-  const runSearch = async (c: Conditions, w: { p1: LatLng; p2: LatLng }): Promise<boolean> => {
+  const runSearch = async (c: Conditions, w: { p1: LatLng; p2: LatLng }, sort: SortBy = sortBy): Promise<boolean> => {
     setLoading(true)
     setError(null)
     try {
@@ -1030,6 +1069,7 @@ export default function App() {
         { workLat: w.p1.lat, workLng: w.p1.lng, priceMin: c.p1Price[0], priceMax: c.p1Price[1], areaMin: c.p1Area[0], areaMax: c.p1Area[1] },
         { workLat: w.p2.lat, workLng: w.p2.lng, priceMin: c.p2Price[0], priceMax: c.p2Price[1], areaMin: c.p2Area[0], areaMax: c.p2Area[1] },
         { p1Name: c.p1Work, p2Name: c.p2Work },
+        sort,
       )
       setListings(r.listings)
       setTotal(r.total)
@@ -1049,6 +1089,12 @@ export default function App() {
     setCond(c)
     setError(null)                       // 조건을 고치는 중이면 이전 오류는 치운다
     if (screen !== 1) void runSearch(c, workCoords)
+  }
+
+  // 정렬은 백엔드에서 자르기 전에 적용되므로 재요청해야 한다.
+  const changeSort = (v: SortBy) => {
+    setSortBy(v)
+    void runSearch(cond, workCoords, v)
   }
 
   const goHome = () => setScreen(1)
@@ -1080,6 +1126,7 @@ export default function App() {
         cond={cond} setCond={updateCond} onSelect={id => { setSelected(id); setScreen(3) }} onHome={goHome}
         workCoords={workCoords} onPickWork={handlePickWork}
         listings={listings} total={total} loading={loading} error={error}
+        sortBy={sortBy} onSortChange={changeSort}
       />
     )
   }
