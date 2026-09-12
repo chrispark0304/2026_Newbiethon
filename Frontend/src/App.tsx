@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { fetchCommute, searchListings } from './api'
-import type { ApiStop, Commute, Listing } from './api'
+import type { ApiStop, Commute, Listing, PathSegment } from './api'
 
 type LatLng = { lat: number; lng: number }
 
@@ -30,12 +30,24 @@ const toStop = (s: ApiStop): Stop => ({
   color: s.mode === 'bus' ? BUS_COLOR : (s.line ? LINE_COLORS[s.line] ?? '#999' : undefined),
 })
 
-/** 전세는 월세가 0이라 "0만원/월"로 찍히면 안 된다. */
-const priceLabel = (p: Listing) =>
-  p.leaseType === '전세' ? `전세 ${(p.deposit / 10000).toFixed(1)}억` : `${p.price}만원/월`
+const eok = (manwon: number) =>
+  manwon >= 10000 ? `${(manwon / 10000).toFixed(manwon % 10000 === 0 ? 0 : 1)}억` : `${manwon.toLocaleString()}만`
 
-const shortPrice = (p: Listing) =>
-  p.leaseType === '전세' ? `전세 ${(p.deposit / 10000).toFixed(1)}억` : `${p.price}만`
+/**
+ * 슬라이더로 거르는 값은 **환산월세**(월세 + 보증금 이자)다.
+ * 보증금 1.2억 / 월세 18만짜리를 "18만원/월"로 찍으면 "30~70으로 골랐는데 왜 18만?"이 된다.
+ * 그래서 큰 숫자는 환산월세로 올리고, 실제 계약 조건은 아래 줄에 둔다.
+ */
+const priceLabel = (p: Listing) => `월 ${p.monthlyEquivalent}만원 상당`
+
+/** 지도 마커처럼 좁은 자리에 쓰는 짧은 표기. */
+const shortPrice = (p: Listing) => `월 ${p.monthlyEquivalent}만`
+
+/** 실제 계약 조건. 전세면 보증금만, 월세면 보증금/월세. */
+const termsLabel = (p: Listing) =>
+  p.leaseType === '전세'
+    ? `전세 ${eok(p.deposit)}`
+    : `보증금 ${eok(p.deposit)} / 월세 ${p.price}만`
 
 type Conditions = {
   p1Work: string; p2Work: string
@@ -88,7 +100,11 @@ type PlaceHit = { name: string; address: string; lat: number; lng: number }
 // Text input with a live Kakao keyword-search dropdown underneath — type "고려대학교",
 // "스타벅스 역삼점", any place or business name, and pick the exact match instead of
 // hoping the first geocoder guess is right.
-function WorkSearchInput({ value, onChange, onPick }: { value: string; onChange: (text: string) => void; onPick: (text: string, coord: LatLng) => void }) {
+function WorkSearchInput({ value, onChange, onPick, picked }: {
+  value: string; onChange: (text: string) => void; onPick: (text: string, coord: LatLng) => void
+  /** 드롭다운에서 실제로 고른 값인지. 직접 친 글자는 첫 검색결과로 추측 지오코딩된다. */
+  picked: boolean
+}) {
   const [results, setResults] = useState<PlaceHit[]>([])
   const [open, setOpen] = useState(false)
   const boxRef = useRef<HTMLDivElement>(null)
@@ -117,7 +133,7 @@ function WorkSearchInput({ value, onChange, onPick }: { value: string; onChange:
 
   return (
     <div className="relative" ref={boxRef}>
-      <div className="flex items-center gap-2 border border-[#ede9e2] rounded-xl px-3 py-2.5 bg-[#faf9f7]">
+      <div className={`flex items-center gap-2 border rounded-xl px-3 py-2.5 bg-[#faf9f7] transition-colors ${picked ? 'border-[#ede9e2]' : 'border-[#e3d3cb]'}`}>
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="6" r="3" stroke="#bbb" strokeWidth="1.2" /><path d="M7 12s4-3.5 4-6a4 4 0 1 0-8 0c0 2.5 4 6 4 6z" stroke="#bbb" strokeWidth="1.2" fill="none" /></svg>
         <input
           type="text"
@@ -127,7 +143,17 @@ function WorkSearchInput({ value, onChange, onPick }: { value: string; onChange:
           placeholder="예: 고려대학교, 강남역, 스타벅스 역삼점"
           className="flex-1 text-sm outline-none bg-transparent text-[#333] placeholder-[#ccc]"
         />
+        {picked && (
+          <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-label="위치 확정됨">
+            <path d="M2.5 7.3l3 3 6-6.6" stroke="#16a34a" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        )}
       </div>
+      {!picked && value.trim() && (
+        <p className="mt-1.5 px-1 text-[11px] leading-snug text-[#b08276]">
+          목록에서 골라 주세요. 그냥 두면 첫 검색 결과로 추측합니다.
+        </p>
+      )}
       {open && results.length > 0 && (
         <div className="absolute z-50 left-0 right-0 mt-1.5 bg-white border border-[#ede9e2] rounded-xl shadow-lg max-h-56 overflow-y-auto">
           {results.map((r, i) => (
@@ -227,18 +253,51 @@ function KakaoPolyline({ map, path, color, width = 4, opacity = 0.9, dashed = fa
 // its actual subway line or bus route, with a thin person-colored halo underneath so it's
 // still clear whose commute is whose. Also drops badges (e.g. "2호선", "🚌 740") at each
 // leg's midpoint and small station dots along the way.
-function TransitRoute({ map, stops, personColor }: { map: any; stops: Stop[]; personColor: string }) {
+function segColor(seg: PathSegment): string {
+  if (seg.mode === 'bus') return BUS_COLOR
+  if (seg.mode === 'walk') return '#9aa0a6'
+  return seg.line ? LINE_COLORS[seg.line] ?? '#999' : '#999'
+}
+
+function TransitRoute({ map, stops, personColor, path }: {
+  map: any; stops: Stop[]; personColor: string
+  /** 카카오가 준 실제 선로 좌표. 없으면(자체 엔진 결과) 정류장을 직선으로 잇는다. */
+  path?: PathSegment[]
+}) {
   if (stops.length < 2) return null
-  return (
-    <>
-      {stops.slice(1).map((to, i) => {
+
+  // 실제 선로 좌표가 있으면 그걸로 그린다. 도보 구간은 점선 회색.
+  const drawn = path?.length
+    ? path.map((seg, i) => {
+        const pts = seg.points.map(([lat, lng]) => ({ lat, lng }))
+        if (pts.length < 2) return null
+        const walk = seg.mode === 'walk'
+        return (
+          <Fragment key={`p${i}`}>
+            {!walk && <KakaoPolyline map={map} path={pts} color={personColor} width={9} opacity={0.2} />}
+            <KakaoPolyline
+              map={map} path={pts} color={segColor(seg)}
+              width={walk ? 3 : 5} dashed={walk || seg.mode === 'bus'}
+              opacity={walk ? 0.75 : 0.95}
+            />
+            {seg.line && (
+              <KakaoOverlay map={map} {...pts[Math.floor(pts.length / 2)]} zIndex={30}>
+                <div className="text-[9px] font-600 text-white px-1.5 py-0.5 rounded-full shadow-sm whitespace-nowrap" style={{ background: segColor(seg) }}>
+                  {seg.mode === 'bus' ? `🚌 ${seg.line}` : seg.line}
+                </div>
+              </KakaoOverlay>
+            )}
+          </Fragment>
+        )
+      })
+    : stops.slice(1).map((to, i) => {
         const from = stops[i]
-        const path = [{ lat: from.lat, lng: from.lng }, { lat: to.lat, lng: to.lng }]
+        const straight = [{ lat: from.lat, lng: from.lng }, { lat: to.lat, lng: to.lng }]
         const isBus = to.mode === 'bus'
         return (
           <Fragment key={i}>
-            <KakaoPolyline map={map} path={path} color={personColor} width={8} opacity={0.22} />
-            <KakaoPolyline map={map} path={path} color={to.color!} width={isBus ? 3 : 4} dashed={isBus} />
+            <KakaoPolyline map={map} path={straight} color={personColor} width={8} opacity={0.22} />
+            <KakaoPolyline map={map} path={straight} color={to.color!} width={isBus ? 3 : 4} dashed={isBus} />
             {to.line && (
               <KakaoOverlay map={map} lat={(from.lat + to.lat) / 2} lng={(from.lng + to.lng) / 2} zIndex={30}>
                 <div className="text-[9px] font-600 text-white px-1.5 py-0.5 rounded-full shadow-sm whitespace-nowrap" style={{ background: to.color }}>
@@ -248,7 +307,11 @@ function TransitRoute({ map, stops, personColor }: { map: any; stops: Stop[]; pe
             )}
           </Fragment>
         )
-      })}
+      })
+
+  return (
+    <>
+      {drawn}
       {stops.map((s, i) => (
         <KakaoOverlay key={i} map={map} lat={s.lat} lng={s.lng} zIndex={15}>
           <div
@@ -286,6 +349,25 @@ function WorkMarker({ map, lat, lng, color, label }: { map: any; lat: number; ln
         <span className="text-[9px] font-500 text-white px-1.5 py-0.5 rounded-full whitespace-nowrap" style={{ background: color }}>{label}</span>
       </div>
     </KakaoOverlay>
+  )
+}
+
+// An inline notice for things the user can fix (conflicting conditions, a backend
+// that isn't running). Warm brick rather than alarm red — nothing here is broken,
+// the form just needs another pass.
+function Notice({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      role="alert"
+      className="notice-in flex items-start gap-2.5 rounded-2xl border border-[#ecd9d1] bg-[#fdf6f3] px-4 py-3 text-left"
+    >
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" className="mt-0.5 flex-shrink-0" aria-hidden="true">
+        <circle cx="8" cy="8" r="6.6" stroke="#c08574" strokeWidth="1.2" />
+        <path d="M8 4.9v3.6" stroke="#c08574" strokeWidth="1.4" strokeLinecap="round" />
+        <circle cx="8" cy="11" r="0.75" fill="#c08574" />
+      </svg>
+      <p className="text-[13px] leading-relaxed text-[#8a5548]">{children}</p>
+    </div>
   )
 }
 
@@ -393,12 +475,13 @@ function ConditionsDrawer({ cond, setCond, open, onClose, onPickWork }: {
                   value={local[workKey]}
                   onChange={text => setLocal({ ...local, [workKey]: text })}
                   onPick={(text, coord) => { setLocal({ ...local, [workKey]: text }); setLocalCoords({ ...localCoords, [workKey]: coord }) }}
+                  picked={!!localCoords[workKey] || local[workKey] === cond[workKey]}
                 />
               </div>
               <div>
                 <div className="flex justify-between mb-2">
-                  <label className="text-xs text-[#aaa]">월세</label>
-                  <span className="text-xs text-[#555]">{local[priceKey][0]}만 – {local[priceKey][1]}만</span>
+                  <label className="text-xs text-[#aaa]">월 부담액</label>
+                  <span className="text-xs text-[#555]">월 {local[priceKey][0]}만 – {local[priceKey][1]}만</span>
                 </div>
                 <RangeSlider min={10} max={150} values={local[priceKey]} onChange={v => setLocal({ ...local, [priceKey]: v })} color={color} />
               </div>
@@ -418,8 +501,12 @@ function ConditionsDrawer({ cond, setCond, open, onClose, onPickWork }: {
 }
 
 // Screen 1
-function InputScreen({ cond, setCond, onSubmit, onPickWork }: {
-  cond: Conditions; setCond: (c: Conditions) => void; onSubmit: () => void; onPickWork: (key: 'p1Work' | 'p2Work', text: string, coord: LatLng) => void
+function InputScreen({ cond, setCond, onSubmit, onPickWork, loading, error, pickedWorks }: {
+  cond: Conditions; setCond: (c: Conditions) => void; onSubmit: () => void
+  onPickWork: (key: 'p1Work' | 'p2Work', text: string, coord: LatLng) => void
+  loading: boolean; error: string | null
+  /** 드롭다운에서 직접 고른 직장. 여기 없으면 첫 검색결과로 추측된 값이다. */
+  pickedWorks: Record<'p1Work' | 'p2Work', boolean>
 }) {
   return (
     <div className="min-h-screen flex flex-col bg-[#faf9f7]">
@@ -451,13 +538,14 @@ function InputScreen({ cond, setCond, onSubmit, onPickWork }: {
                   value={cond[workKey]}
                   onChange={text => setCond({ ...cond, [workKey]: text })}
                   onPick={(text, coord) => onPickWork(workKey, text, coord)}
+                  picked={pickedWorks[workKey]}
                 />
               </div>
 
               <div>
                 <div className="flex justify-between mb-2">
-                  <label className="text-xs text-[#bbb]">월세</label>
-                  <span className="text-xs text-[#666]">{cond[priceKey][0]}만 – {cond[priceKey][1]}만</span>
+                  <label className="text-xs text-[#bbb]">월 부담액</label>
+                  <span className="text-xs text-[#666]">월 {cond[priceKey][0]}만 – {cond[priceKey][1]}만</span>
                 </div>
                 <RangeSlider min={10} max={150} values={cond[priceKey]} onChange={v => setCond({ ...cond, [priceKey]: v })} color={color} />
               </div>
@@ -475,20 +563,23 @@ function InputScreen({ cond, setCond, onSubmit, onPickWork }: {
 
         <button
           onClick={onSubmit}
-          className="mt-8 px-10 py-3.5 bg-[#2d2a24] text-white text-base font-500 rounded-full hover:bg-[#444] transition-all shadow-md hover:shadow-lg"
+          disabled={loading}
+          className="mt-8 px-10 py-3.5 bg-[#2d2a24] text-white text-base font-500 rounded-full hover:bg-[#444] transition-all shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-[#2d2a24]"
         >
-          같이 살자 &nbsp;&nbsp;→
+          {loading ? '찾는 중…' : <>같이 살자 &nbsp;&nbsp;→</>}
         </button>
+
+        {error && <div className="mt-5 w-full max-w-[440px]"><Notice>{error}</Notice></div>}
       </main>
     </div>
   )
 }
 
 // Screen 2
-function MapScreen({ cond, setCond, onSelect, onHome, workCoords, onPickWork, listings, loading, error }: {
+function MapScreen({ cond, setCond, onSelect, onHome, workCoords, onPickWork, listings, total, loading, error }: {
   cond: Conditions; setCond: (c: Conditions) => void; onSelect: (id: number) => void; onHome: () => void; workCoords: { p1: LatLng; p2: LatLng }
   onPickWork: (key: 'p1Work' | 'p2Work', text: string, coord: LatLng) => void
-  listings: Listing[]; loading: boolean; error: string | null
+  listings: Listing[]; total: number; loading: boolean; error: string | null
 }) {
   const [hovered, setHovered] = useState<number | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -501,7 +592,13 @@ function MapScreen({ cond, setCond, onSelect, onHome, workCoords, onPickWork, li
         <button onClick={onHome} className="flex items-center gap-2.5 hover:opacity-70 transition-opacity">
           <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M10 2L3 8v10h5v-5h4v5h5V8L10 2z" fill="#2d2a24" /></svg>
           <span className="text-sm font-500 text-[#2d2a24]">같이살집</span>
-          <span className="text-xs text-[#bbb] ml-1">{loading ? '불러오는 중…' : `매물 ${listings.length}개`}</span>
+          <span className="text-xs text-[#bbb] ml-1">
+            {loading
+              ? '불러오는 중…'
+              : total > listings.length
+                ? `매물 ${listings.length}개 · 조건 충족 ${total.toLocaleString()}개`
+                : `매물 ${listings.length}개`}
+          </span>
         </button>
         <button
           onClick={() => setDrawerOpen(true)}
@@ -514,11 +611,11 @@ function MapScreen({ cond, setCond, onSelect, onHome, workCoords, onPickWork, li
 
       <div className="flex-1 flex overflow-hidden">
         <aside className="w-[240px] border-r border-[#ede9e2] overflow-y-auto scroll-hide flex-shrink-0 bg-white">
-          {error && <div className="px-4 py-6 text-xs text-[#c0392b] leading-relaxed">{error}</div>}
+          {error && <div className="p-3"><Notice>{error}</Notice></div>}
           {!error && !loading && listings.length === 0 && (
-            <div className="px-4 py-6 text-xs text-[#999] leading-relaxed">
+            <p className="px-4 py-6 text-[13px] leading-relaxed text-[#999]">
               조건에 맞는 매물이 없어요.<br />가격이나 평수 범위를 넓혀보세요.
-            </div>
+            </p>
           )}
           {listings.map(p => (
             <button
@@ -533,6 +630,7 @@ function MapScreen({ cond, setCond, onSelect, onHome, workCoords, onPickWork, li
               </div>
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-600 text-[#2d2a24]">{priceLabel(p)}</div>
+                <div className="text-[11px] text-[#aaa] mt-0.5 truncate">{termsLabel(p)}</div>
                 <div className="text-xs text-[#999] mt-0.5 truncate">{p.neighborhood}</div>
                 <div className="text-xs text-[#bbb] mt-0.5">{p.floor}층 · {p.area}평</div>
                 <div className="text-[10px] text-[#bbb] mt-1 truncate">
@@ -597,12 +695,16 @@ function DetailScreen({ listing, cond, setCond, onBack, onHome, workCoords, onPi
 
   // 경로가 오기 전에는 목록에서 받은 통근시간만 보여 준다.
   const legs = [
-    { color: '#16a34a', label: cond.p1Work, stops: (commute?.p1.stops ?? []).map(toStop), minutes: commute?.p1.minutes ?? p.commuteMinutes[0] },
-    { color: '#7c3aed', label: cond.p2Work, stops: (commute?.p2.stops ?? []).map(toStop), minutes: commute?.p2.minutes ?? p.commuteMinutes[1] },
+    { color: '#16a34a', label: cond.p1Work, stops: (commute?.p1.stops ?? []).map(toStop), minutes: commute?.p1.minutes ?? p.commuteMinutes[0], path: commute?.p1.path },
+    { color: '#7c3aed', label: cond.p2Work, stops: (commute?.p2.stops ?? []).map(toStop), minutes: commute?.p2.minutes ?? p.commuteMinutes[1], path: commute?.p2.path },
   ]
   const fitPoints = [
     { lat: p.lat, lng: p.lng }, workCoords.p1, workCoords.p2,
     ...legs.flatMap(l => l.stops.map(s => ({ lat: s.lat, lng: s.lng }))),
+    // 선로가 정류장 밖으로 휘는 구간까지 화면에 담기도록 폴리라인 양 끝도 넣는다.
+    ...legs.flatMap(l => (l.path ?? []).flatMap(seg =>
+      seg.points.length ? [seg.points[0], seg.points[seg.points.length - 1]] : []
+    ).map(([lat, lng]) => ({ lat, lng }))),
   ]
 
   return (
@@ -636,9 +738,9 @@ function DetailScreen({ listing, cond, setCond, onBack, onHome, workCoords, onPi
 
           <div className="p-5 flex-1">
             <div className="text-2xl font-600 text-[#2d2a24] mb-0.5">{priceLabel(p)}</div>
-            <div className="text-xs text-[#bbb] mb-5">
-              {p.leaseType === '전세' ? `환산 월세 ${p.monthlyEquivalent}만원` : `보증금 ${p.deposit.toLocaleString()}만원`}
-              {p.buildingName && ` · ${p.buildingName}`}
+            <div className="text-sm text-[#777]">{termsLabel(p)}</div>
+            <div className="text-xs text-[#bbb] mt-1 mb-5">
+              보증금을 연 5.5%로 환산한 월 부담액입니다{p.buildingName && ` · ${p.buildingName}`}
             </div>
 
             <div className="grid grid-cols-2 gap-2">
@@ -654,7 +756,7 @@ function DetailScreen({ listing, cond, setCond, onBack, onHome, workCoords, onPi
               <div className="text-xs text-[#bbb] mb-1">
                 통근 시간
                 {!commute && !routeError && <span className="ml-1 text-[#ccc]">경로 불러오는 중…</span>}
-                {routeError && <span className="ml-1 text-[#c0392b]">경로를 불러오지 못했어요</span>}
+                {routeError && <span className="ml-1 text-[#b08276]">경로를 불러오지 못했어요</span>}
               </div>
               {legs.map(({ color, label, stops, minutes }) => (
                 <div key={label} className="flex items-start gap-2.5">
@@ -684,7 +786,7 @@ function DetailScreen({ listing, cond, setCond, onBack, onHome, workCoords, onPi
             {map => (
               <>
                 {legs.map(l => l.stops.length > 1 && (
-                  <TransitRoute key={l.color} map={map} stops={l.stops} personColor={l.color} />
+                  <TransitRoute key={l.color} map={map} stops={l.stops} personColor={l.color} path={l.path} />
                 ))}
                 <KakaoOverlay map={map} lat={p.lat} lng={p.lng} zIndex={25}>
                   <div className="w-9 h-9 rounded-full bg-[#2d2a24] flex items-center justify-center shadow-lg">
@@ -735,6 +837,7 @@ export default function App() {
     p1Area: [7, 18], p2Area: [8, 20],
   })
   const [listings, setListings] = useState<Listing[]>([])
+  const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [workCoords, setWorkCoords] = useState<{ p1: LatLng; p2: LatLng }>({ p1: DEFAULT_P1_COORD, p2: DEFAULT_P2_COORD })
@@ -744,8 +847,11 @@ export default function App() {
   // re-search and possibly jump the marker to a different, less precise match.
   const lastPicked = useRef<{ p1Work?: { text: string; coord: LatLng }; p2Work?: { text: string; coord: LatLng } }>({})
 
+  const [pickedWorks, setPickedWorks] = useState<Record<'p1Work' | 'p2Work', boolean>>({ p1Work: true, p2Work: true })
+
   const handlePickWork = (key: 'p1Work' | 'p2Work', text: string, coord: LatLng) => {
     lastPicked.current = { ...lastPicked.current, [key]: { text, coord } }
+    setPickedWorks(w => ({ ...w, [key]: true }))
     setCond(c => ({ ...c, [key]: text }))
     setWorkCoords(w => ({ ...w, [key === 'p1Work' ? 'p1' : 'p2']: coord }))
   }
@@ -769,17 +875,23 @@ export default function App() {
   }, [kakaoReady, cond.p1Work, cond.p2Work])
 
   /** 직장 좌표 + 조건으로 매물을 검색한다. 직장 텍스트는 이미 카카오 SDK가 좌표로 바꿔 놨다. */
-  const runSearch = async (c: Conditions, w: { p1: LatLng; p2: LatLng }) => {
+  const runSearch = async (c: Conditions, w: { p1: LatLng; p2: LatLng }): Promise<boolean> => {
     setLoading(true)
     setError(null)
     try {
-      setListings(await searchListings(
+      const r = await searchListings(
         { workLat: w.p1.lat, workLng: w.p1.lng, priceMin: c.p1Price[0], priceMax: c.p1Price[1], areaMin: c.p1Area[0], areaMax: c.p1Area[1] },
         { workLat: w.p2.lat, workLng: w.p2.lng, priceMin: c.p2Price[0], priceMax: c.p2Price[1], areaMin: c.p2Area[0], areaMax: c.p2Area[1] },
-      ))
+        { p1Name: c.p1Work, p2Name: c.p2Work },
+      )
+      setListings(r.listings)
+      setTotal(r.total)
+      return true
     } catch (e: any) {
       setError(String(e?.message ?? e))
       setListings([])
+      setTotal(0)
+      return false
     } finally {
       setLoading(false)
     }
@@ -788,6 +900,7 @@ export default function App() {
   // 조건 서랍에서 값을 바꾸면 재검색한다(1번 화면에서는 "같이 살자"를 눌러야 검색).
   const updateCond = (c: Conditions) => {
     setCond(c)
+    setError(null)                       // 조건을 고치는 중이면 이전 오류는 치운다
     if (screen !== 1) void runSearch(c, workCoords)
   }
 
@@ -795,14 +908,31 @@ export default function App() {
   const selectedListing = listings.find(l => l.id === selected) ?? null
 
   if (screen === 1) {
-    return <InputScreen cond={cond} setCond={setCond} onSubmit={() => { setScreen(2); void runSearch(cond, workCoords) }} onPickWork={handlePickWork} />
+    // 조건이 모순이면(평수 범위가 안 겹치는 등) 2번 화면으로 넘기지 않고 여기서 알린다.
+    const submit = async () => {
+      if (await runSearch(cond, workCoords)) setScreen(2)
+    }
+    // 직장 텍스트를 직접 고치면 "확정" 표시를 푼다. 드롭다운에서 다시 골라야 확정된다.
+    const setCondFromInput = (c: Conditions) => {
+      setPickedWorks(w => ({
+        p1Work: c.p1Work === cond.p1Work ? w.p1Work : false,
+        p2Work: c.p2Work === cond.p2Work ? w.p2Work : false,
+      }))
+      updateCond(c)
+    }
+    return (
+      <InputScreen
+        cond={cond} setCond={setCondFromInput} onSubmit={() => void submit()} onPickWork={handlePickWork}
+        loading={loading} error={error} pickedWorks={pickedWorks}
+      />
+    )
   }
   if (screen === 2 || !selectedListing) {
     return (
       <MapScreen
         cond={cond} setCond={updateCond} onSelect={id => { setSelected(id); setScreen(3) }} onHome={goHome}
         workCoords={workCoords} onPickWork={handlePickWork}
-        listings={listings} loading={loading} error={error}
+        listings={listings} total={total} loading={loading} error={error}
       />
     )
   }

@@ -33,10 +33,17 @@ export type ApiStop = {
   line?: string
 }
 
+/** 실제 선로 좌표. 정류장을 직선으로 이으면 지하철이 강을 가로지르는 것처럼 그려진다. */
+export type PathSegment = {
+  mode: 'subway' | 'bus' | 'walk'
+  line: string | null
+  points: [number, number][] // [lat, lng]
+}
+
 export type CommuteLeg = {
   minutes: number
   stops: ApiStop[]
-  path: [number, number][][] // 구간별 폴리라인 [[lat, lng], …]
+  path: PathSegment[]
   source: 'kakao' | 'engine'
   transfers: number | null
   fare: number | null
@@ -44,13 +51,69 @@ export type CommuteLeg = {
 
 export type Commute = { p1: CommuteLeg; p2: CommuteLeg }
 
+/** 백엔드 오류에 붙는 코드. 화면에서 분기할 일이 있으면 이걸 본다. */
+export type ApiErrorCode = 'AREA_RANGE_DISJOINT' | 'PRICE_RANGE_INVALID' | 'WORK_NO_STATION'
+
+export class ApiError extends Error {
+  code?: ApiErrorCode
+  status: number
+
+  constructor(message: string, status: number, code?: ApiErrorCode) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.code = code
+  }
+}
+
+/**
+ * FastAPI는 오류를 `{ detail: ... }`로 싼다. detail이 문자열일 때도 있고
+ * `{ code, message }` 객체일 때도 있어서(조건 모순 등) 양쪽을 다 받는다.
+ * 객체를 그냥 문자열로 만들면 화면에 "[object Object]"가 찍힌다.
+ */
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init)
+  let res: Response
+  try {
+    res = await fetch(url, init)
+  } catch {
+    // 네트워크 자체가 안 닿는 경우 — 보통 백엔드가 안 떠 있다.
+    throw new ApiError('서버에 연결할 수 없어요. 백엔드가 실행 중인지 확인해 주세요.', 0)
+  }
+
   if (!res.ok) {
-    const detail = await res.json().catch(() => null)
-    throw new Error(detail?.detail ?? `${res.status} ${res.statusText}`)
+    const body = await res.json().catch(() => null)
+    const detail = body?.detail
+    if (detail && typeof detail === 'object') {
+      throw new ApiError(detail.message ?? `${res.status} ${res.statusText}`, res.status, detail.code)
+    }
+    throw new ApiError(
+      typeof detail === 'string' ? detail : `${res.status} ${res.statusText}`,
+      res.status,
+    )
   }
   return res.json()
+}
+
+/** json()과 같지만 응답 헤더도 함께 돌려준다. */
+async function jsonWithHeaders<T>(url: string, init?: RequestInit): Promise<{ data: T; headers: Headers }> {
+  let res: Response
+  try {
+    res = await fetch(url, init)
+  } catch {
+    throw new ApiError('서버에 연결할 수 없어요. 백엔드가 실행 중인지 확인해 주세요.', 0)
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    const detail = body?.detail
+    if (detail && typeof detail === 'object') {
+      throw new ApiError(detail.message ?? `${res.status} ${res.statusText}`, res.status, detail.code)
+    }
+    throw new ApiError(
+      typeof detail === 'string' ? detail : `${res.status} ${res.statusText}`,
+      res.status,
+    )
+  }
+  return { data: await res.json(), headers: res.headers }
 }
 
 /** 자유 텍스트("강남역") → 좌표 */
@@ -67,12 +130,26 @@ export type PersonQuery = {
   areaMax: number
 }
 
-export function searchListings(p1: PersonQuery, p2: PersonQuery, limit = 40): Promise<Listing[]> {
-  return json(`${BASE}/api/listings/search`, {
+export type SearchResult = {
+  listings: Listing[]
+  /** 조건에 맞는 전체 개수. listings는 limit만큼만 잘린 앞부분이다. */
+  total: number
+}
+
+export async function searchListings(
+  p1: PersonQuery,
+  p2: PersonQuery,
+  /** 오류 문구에 쓸 직장 표시명. "'판교' 주변에 지하철역이 없어요" 처럼 쓰인다. */
+  names?: { p1Name: string; p2Name: string },
+  limit = 100,
+): Promise<SearchResult> {
+  const { data, headers } = await jsonWithHeaders<Listing[]>(`${BASE}/api/listings/search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ p1, p2, limit }),
+    body: JSON.stringify({ p1, p2, limit, ...names }),
   })
+  const total = Number(headers.get('X-Total-Matched'))
+  return { listings: data, total: Number.isFinite(total) && total > 0 ? total : data.length }
 }
 
 export function fetchCommute(
