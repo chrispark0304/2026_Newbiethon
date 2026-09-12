@@ -77,10 +77,21 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="같이살집 API", version="0.1.0", lifespan=lifespan)
 
-# 개발 중 프론트(Vite 등)에서 바로 부를 수 있게 열어 둔다.
-# 배포 시에는 실제 도메인으로 좁힐 것.
+#: 허용할 프론트 출처. 쉼표로 구분해 CORS_ORIGINS 환경변수로 넘긴다.
+#: 비워 두면 로컬 개발 주소만 허용한다 — 배포할 때 실제 도메인을 반드시 넣을 것.
+#: ("*"를 넣으면 전체 개방이지만 배포 환경에서는 권장하지 않는다.)
+DEFAULT_ORIGINS = [
+    "http://localhost:8443", "http://127.0.0.1:8443",
+    "http://localhost:5173", "http://127.0.0.1:5173",
+]
+CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
+
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS or DEFAULT_ORIGINS,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
+    expose_headers=["X-Total-Matched"],
 )
 
 

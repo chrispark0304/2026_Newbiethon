@@ -1,0 +1,14 @@
+.git
+.gitignore
+Frontend
+Roommate finder app
+**/__pycache__
+**/*.pyc
+**/.env
+**/.env.local
+api/data/kakao_cache.json
+rtms_같이살집_동네별_202608.csv
+rtms_같이살집_최종_202608.csv
+SETUP.md
+*.md
+!api/README.md

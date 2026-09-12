@@ -1,0 +1,31 @@
+# Fly.io 배포 설정.  fly launch --no-deploy 로 앱을 만든 뒤 이 파일로 덮어쓰면 된다.
+app = "gachisaljip-api"          # ← 본인 앱 이름으로 바꿀 것
+primary_region = "nrt"           # 도쿄. 서울 사용자 기준 가장 가깝다.
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8000"
+  COMMUTE_PROVIDER = "hybrid"
+  KAKAO_DAILY_BUDGET = "900"
+  # CORS_ORIGINS 는 프론트 배포 후 fly secrets 또는 여기에 넣는다.
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # 기동이 0.2초라 잠들었다 깨어도 체감이 없다. 유휴 비용을 아끼려면 true로 둔다.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    grace_period = "5s"
+    interval = "30s"
+    timeout = "3s"
+    method = "GET"
+    path = "/api/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"               # 실측 RSS 41MB. 여유를 둬도 이걸로 충분하다.
