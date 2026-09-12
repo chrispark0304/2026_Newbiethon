@@ -1,6 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
-import { fetchCommute, geocode, searchListings, toXY } from './api'
-import type { ApiStop, Commute, Geo, Listing } from './api'
+import { useState, useRef, useEffect, Fragment } from 'react'
+import { createPortal } from 'react-dom'
+import { fetchCommute, searchListings } from './api'
+import type { ApiStop, Commute, Listing } from './api'
+
+type LatLng = { lat: number; lng: number }
 
 // Real-world Seoul subway line colors, used so route lines read like an actual transit map
 const LINE_COLORS: Record<string, string> = {
@@ -17,26 +20,23 @@ const BUS_COLOR = '#2563eb'
 // (the first stop in a route has none, since there's no leg before it).
 type Stop = LatLng & { name: string; mode?: 'subway' | 'bus'; line?: string; color?: string }
 
-
-const pct = ({ x, y }: { x: number; y: number }) => ({ left: `${x}%`, top: `${y}%` })
-
-/** 전세는 월세가 0이라 "0만원/월"로 찍히면 안 된다. */
-const priceLabel = (p: Listing) =>
-  p.leaseType === '전세'
-    ? `전세 ${(p.deposit / 10000).toFixed(1)}억`
-    : `${p.price}만원/월`
-
-// 백엔드 stop(위경도) → 화면 stop(%좌표). 지도 SDK를 붙이면 toXY만 걷어내면 된다.
+/** 백엔드 stop → 화면 Stop. 노선 색만 여기서 입힌다. */
 const toStop = (s: ApiStop): Stop => ({
   name: s.name,
-  ...toXY(s.lat, s.lng),
+  lat: s.lat,
+  lng: s.lng,
   mode: s.mode,
   line: s.line,
   color: s.mode === 'bus' ? BUS_COLOR : (s.line ? LINE_COLORS[s.line] ?? '#999' : undefined),
 })
 
+/** 전세는 월세가 0이라 "0만원/월"로 찍히면 안 된다. */
+const priceLabel = (p: Listing) =>
+  p.leaseType === '전세' ? `전세 ${(p.deposit / 10000).toFixed(1)}억` : `${p.price}만원/월`
 
-// Shared condition state lifted to App so it persists across screens
+const shortPrice = (p: Listing) =>
+  p.leaseType === '전세' ? `전세 ${(p.deposit / 10000).toFixed(1)}억` : `${p.price}만`
+
 type Conditions = {
   p1Work: string; p2Work: string
   p1Price: number[]; p2Price: number[]
@@ -485,17 +485,15 @@ function InputScreen({ cond, setCond, onSubmit, onPickWork }: {
 }
 
 // Screen 2
-
-function MapScreen({ cond, setCond, listings, works, loading, error, onSelect, onHome }: {
-  cond: Conditions; setCond: (c: Conditions) => void
-  listings: Listing[]; works: { p1: Geo; p2: Geo } | null
-  loading: boolean; error: string | null
-  onSelect: (id: number) => void; onHome: () => void
-
+function MapScreen({ cond, setCond, onSelect, onHome, workCoords, onPickWork, listings, loading, error }: {
+  cond: Conditions; setCond: (c: Conditions) => void; onSelect: (id: number) => void; onHome: () => void; workCoords: { p1: LatLng; p2: LatLng }
+  onPickWork: (key: 'p1Work' | 'p2Work', text: string, coord: LatLng) => void
+  listings: Listing[]; loading: boolean; error: string | null
 }) {
   const [hovered, setHovered] = useState<number | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
-  const fitPoints = [workCoords.p1, workCoords.p2, ...PROPERTIES.map(p => ({ lat: p.lat, lng: p.lng }))]
+  // 매물이 아직 없으면 직장 두 곳만으로 지도를 맞춘다.
+  const fitPoints = [workCoords.p1, workCoords.p2, ...listings.map(p => ({ lat: p.lat, lng: p.lng }))]
 
   return (
     <div className="h-screen flex flex-col bg-[#faf9f7]">
@@ -537,7 +535,7 @@ function MapScreen({ cond, setCond, listings, works, loading, error, onSelect, o
                 <div className="text-sm font-600 text-[#2d2a24]">{priceLabel(p)}</div>
                 <div className="text-xs text-[#999] mt-0.5 truncate">{p.neighborhood}</div>
                 <div className="text-xs text-[#bbb] mt-0.5">{p.floor}층 · {p.area}평</div>
-                <div className="text-[10px] text-[#bbb] mt-1">
+                <div className="text-[10px] text-[#bbb] mt-1 truncate">
                   통근 {p.commuteMinutes[0]}분 · {p.commuteMinutes[1]}분
                   {p.nearestStation && ` · ${p.nearestStation.name} 도보 ${p.nearestStation.walkMin}분`}
                 </div>
@@ -547,23 +545,27 @@ function MapScreen({ cond, setCond, listings, works, loading, error, onSelect, o
         </aside>
 
         <div className="flex-1 relative">
-          <MapBackground />
-          {works && <WorkMarker {...toXY(works.p1.lat, works.p1.lng)} color="#16a34a" label={cond.p1Work} />}
-          {works && <WorkMarker {...toXY(works.p2.lat, works.p2.lng)} color="#7c3aed" label={cond.p2Work} />}
-          {listings.map(p => (
-            <button
-              key={p.id}
-              onClick={() => onSelect(p.id)}
-              onMouseEnter={() => setHovered(p.id)}
-              onMouseLeave={() => setHovered(null)}
-              className="absolute z-30"
-              style={{ ...pct(toXY(p.lat, p.lng)), transform: 'translate(-50%, -50%)' }}
-            >
-              <div className={`px-2.5 py-1 text-xs font-600 rounded-full border shadow-sm transition-all ${hovered === p.id ? 'bg-[#2d2a24] text-white border-[#2d2a24] shadow-md' : 'bg-white text-[#2d2a24] border-[#ddd] hover:border-[#999]'}`}>
-                {p.leaseType === '전세' ? `전세 ${(p.deposit / 10000).toFixed(1)}억` : `${p.price}만`}
-              </div>
-            </button>
-          ))}
+          <KakaoMap fitPoints={fitPoints}>
+            {map => (
+              <>
+                <WorkMarker map={map} lat={workCoords.p1.lat} lng={workCoords.p1.lng} color="#16a34a" label={cond.p1Work} />
+                <WorkMarker map={map} lat={workCoords.p2.lat} lng={workCoords.p2.lng} color="#7c3aed" label={cond.p2Work} />
+                {listings.map(p => (
+                  <KakaoOverlay key={p.id} map={map} lat={p.lat} lng={p.lng} zIndex={hovered === p.id ? 31 : 30}>
+                    <button
+                      onClick={() => onSelect(p.id)}
+                      onMouseEnter={() => setHovered(p.id)}
+                      onMouseLeave={() => setHovered(null)}
+                    >
+                      <div className={`px-2.5 py-1 text-xs font-600 rounded-full border shadow-sm transition-all whitespace-nowrap ${hovered === p.id ? 'bg-[#2d2a24] text-white border-[#2d2a24] shadow-md' : 'bg-white text-[#2d2a24] border-[#ddd] hover:border-[#999]'}`}>
+                        {shortPrice(p)}
+                      </div>
+                    </button>
+                  </KakaoOverlay>
+                ))}
+              </>
+            )}
+          </KakaoMap>
         </div>
       </div>
 
@@ -573,10 +575,9 @@ function MapScreen({ cond, setCond, listings, works, loading, error, onSelect, o
 }
 
 // Screen 3
-function DetailScreen({ listing, cond, setCond, works, onBack, onHome }: {
-  listing: Listing; cond: Conditions; setCond: (c: Conditions) => void
-  works: { p1: Geo; p2: Geo } | null
-  onBack: () => void; onHome: () => void
+function DetailScreen({ listing, cond, setCond, onBack, onHome, workCoords, onPickWork }: {
+  listing: Listing; cond: Conditions; setCond: (c: Conditions) => void; onBack: () => void; onHome: () => void; workCoords: { p1: LatLng; p2: LatLng }
+  onPickWork: (key: 'p1Work' | 'p2Work', text: string, coord: LatLng) => void
 }) {
   const p = listing
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -585,20 +586,23 @@ function DetailScreen({ listing, cond, setCond, works, onBack, onHome }: {
 
   // 경로는 이 화면에 들어올 때만 부른다(명세의 lazy 호출). 목록 단계에서는 시간만 온다.
   useEffect(() => {
-    if (!works) return
     let alive = true
-    setCommute(null); setRouteError(null)
-    fetchCommute(p.id, works.p1, works.p2)
+    setCommute(null)
+    setRouteError(null)
+    fetchCommute(p.id, workCoords.p1, workCoords.p2)
       .then(c => { if (alive) setCommute(c) })
-      .catch(e => { if (alive) setRouteError(String(e.message ?? e)) })
+      .catch(e => { if (alive) setRouteError(String(e?.message ?? e)) })
     return () => { alive = false }
-  }, [p.id, works])
+  }, [p.id, workCoords.p1.lat, workCoords.p1.lng, workCoords.p2.lat, workCoords.p2.lng])
 
-  // 경로가 오기 전에는 목록에서 받은 통근시간만으로 그린다.
+  // 경로가 오기 전에는 목록에서 받은 통근시간만 보여 준다.
   const legs = [
     { color: '#16a34a', label: cond.p1Work, stops: (commute?.p1.stops ?? []).map(toStop), minutes: commute?.p1.minutes ?? p.commuteMinutes[0] },
     { color: '#7c3aed', label: cond.p2Work, stops: (commute?.p2.stops ?? []).map(toStop), minutes: commute?.p2.minutes ?? p.commuteMinutes[1] },
-
+  ]
+  const fitPoints = [
+    { lat: p.lat, lng: p.lng }, workCoords.p1, workCoords.p2,
+    ...legs.flatMap(l => l.stops.map(s => ({ lat: s.lat, lng: s.lng }))),
   ]
 
   return (
@@ -648,7 +652,8 @@ function DetailScreen({ listing, cond, setCond, works, onBack, onHome }: {
 
             <div className="mt-5 pt-5 border-t border-[#ede9e2] space-y-3.5">
               <div className="text-xs text-[#bbb] mb-1">
-                통근 시간{!commute && !routeError && <span className="ml-1 text-[#ccc]">경로 불러오는 중…</span>}
+                통근 시간
+                {!commute && !routeError && <span className="ml-1 text-[#ccc]">경로 불러오는 중…</span>}
                 {routeError && <span className="ml-1 text-[#c0392b]">경로를 불러오지 못했어요</span>}
               </div>
               {legs.map(({ color, label, stops, minutes }) => (
@@ -675,20 +680,23 @@ function DetailScreen({ listing, cond, setCond, works, onBack, onHome }: {
         </aside>
 
         <div className="flex-1 relative">
-          <MapBackground />
-          <svg className="absolute inset-0 w-full h-full pointer-events-none">
-            {legs.map(({ stops, color }) => stops.length > 1 && <TransitRoute key={color} stops={stops} personColor={color} />)}
-          </svg>
-          {legs.map(({ stops, color }) => stops.length > 1 && <TransitLegBadges key={color} stops={stops} />)}
-          <div className="absolute z-20" style={{ ...pct(toXY(p.lat, p.lng)), transform: 'translate(-50%, -50%)' }}>
-            <div className="w-9 h-9 rounded-full bg-[#2d2a24] flex items-center justify-center shadow-lg">
-              <svg width="16" height="16" viewBox="0 0 20 20" fill="none"><path d="M10 2L3 8v10h5v-5h4v5h5V8L10 2z" fill="white" /></svg>
-            </div>
-          </div>
-          {works && <WorkMarker {...toXY(works.p1.lat, works.p1.lng)} color="#16a34a" label={cond.p1Work} />}
-          {works && <WorkMarker {...toXY(works.p2.lat, works.p2.lng)} color="#7c3aed" label={cond.p2Work} />}
-          <div className="absolute bottom-4 right-4 bg-white/90 backdrop-blur-sm border border-[#ede9e2] rounded-xl px-3 py-2.5 text-xs space-y-1.5 shadow-sm max-w-[160px]">
-
+          <KakaoMap fitPoints={fitPoints}>
+            {map => (
+              <>
+                {legs.map(l => l.stops.length > 1 && (
+                  <TransitRoute key={l.color} map={map} stops={l.stops} personColor={l.color} />
+                ))}
+                <KakaoOverlay map={map} lat={p.lat} lng={p.lng} zIndex={25}>
+                  <div className="w-9 h-9 rounded-full bg-[#2d2a24] flex items-center justify-center shadow-lg">
+                    <svg width="16" height="16" viewBox="0 0 20 20" fill="none"><path d="M10 2L3 8v10h5v-5h4v5h5V8L10 2z" fill="white" /></svg>
+                  </div>
+                </KakaoOverlay>
+                <WorkMarker map={map} lat={workCoords.p1.lat} lng={workCoords.p1.lng} color="#16a34a" label={cond.p1Work} />
+                <WorkMarker map={map} lat={workCoords.p2.lat} lng={workCoords.p2.lng} color="#7c3aed" label={cond.p2Work} />
+              </>
+            )}
+          </KakaoMap>
+          <div className="absolute bottom-4 right-4 bg-white/90 backdrop-blur-sm border border-[#ede9e2] rounded-xl px-3 py-2.5 text-xs space-y-1.5 shadow-sm max-w-[160px] pointer-events-none">
             {[['#16a34a', '사람 1 경로'], ['#7c3aed', '사람 2 경로']].map(([color, label]) => (
               <div key={label} className="flex items-center gap-2">
                 <div className="w-5 h-0.5 rounded-full" style={{ background: color, opacity: 0.4 }} />
@@ -722,25 +730,53 @@ export default function App() {
   const [selected, setSelected] = useState<number | null>(null)
   const [cond, setCond] = useState<Conditions>({
     p1Work: '강남역', p2Work: '홍대입구역',
+    // 서울 연립다세대는 중앙값 11평 · 90퍼센타일 19평이다. 기본값을 데이터에 맞춘다.
     p1Price: [30, 70], p2Price: [40, 80],
     p1Area: [7, 18], p2Area: [8, 20],
   })
-  const [works, setWorks] = useState<{ p1: Geo; p2: Geo } | null>(null)
   const [listings, setListings] = useState<Listing[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [workCoords, setWorkCoords] = useState<{ p1: LatLng; p2: LatLng }>({ p1: DEFAULT_P1_COORD, p2: DEFAULT_P2_COORD })
+  const kakaoReady = useKakaoReady()
+  // Remembers the last text that was resolved via an explicit dropdown pick (with its
+  // exact coordinate), so the debounced fallback geocoder below doesn't immediately
+  // re-search and possibly jump the marker to a different, less precise match.
+  const lastPicked = useRef<{ p1Work?: { text: string; coord: LatLng }; p2Work?: { text: string; coord: LatLng } }>({})
 
-  /** 조건 확정 → 직장 2곳 지오코딩 → 매물 검색. 화면 전환은 먼저 해서 대기 상태를 보여 준다. */
-  const runSearch = async (c: Conditions) => {
-    setLoading(true); setError(null)
+  const handlePickWork = (key: 'p1Work' | 'p2Work', text: string, coord: LatLng) => {
+    lastPicked.current = { ...lastPicked.current, [key]: { text, coord } }
+    setCond(c => ({ ...c, [key]: text }))
+    setWorkCoords(w => ({ ...w, [key === 'p1Work' ? 'p1' : 'p2']: coord }))
+  }
+
+  // Re-geocode whenever either work-location text changes (debounced so we don't
+  // fire a request on every keystroke), unless that exact text was just set by an
+  // explicit dropdown pick above.
+  useEffect(() => {
+    if (!kakaoReady) return
+    const t = setTimeout(async () => {
+      const needP1 = lastPicked.current.p1Work?.text !== cond.p1Work
+      const needP2 = lastPicked.current.p2Work?.text !== cond.p2Work
+      if (!needP1 && !needP2) return
+      const [p1, p2] = await Promise.all([
+        needP1 ? geocodeKeyword(cond.p1Work) : Promise.resolve(lastPicked.current.p1Work!.coord),
+        needP2 ? geocodeKeyword(cond.p2Work) : Promise.resolve(lastPicked.current.p2Work!.coord),
+      ])
+      setWorkCoords({ p1: p1 ?? DEFAULT_P1_COORD, p2: p2 ?? DEFAULT_P2_COORD })
+    }, 400)
+    return () => clearTimeout(t)
+  }, [kakaoReady, cond.p1Work, cond.p2Work])
+
+  /** 직장 좌표 + 조건으로 매물을 검색한다. 직장 텍스트는 이미 카카오 SDK가 좌표로 바꿔 놨다. */
+  const runSearch = async (c: Conditions, w: { p1: LatLng; p2: LatLng }) => {
+    setLoading(true)
+    setError(null)
     try {
-      const [p1, p2] = await Promise.all([geocode(c.p1Work), geocode(c.p2Work)])
-      setWorks({ p1, p2 })
-      const found = await searchListings(
-        { workLat: p1.lat, workLng: p1.lng, priceMin: c.p1Price[0], priceMax: c.p1Price[1], areaMin: c.p1Area[0], areaMax: c.p1Area[1] },
-        { workLat: p2.lat, workLng: p2.lng, priceMin: c.p2Price[0], priceMax: c.p2Price[1], areaMin: c.p2Area[0], areaMax: c.p2Area[1] },
-      )
-      setListings(found)
+      setListings(await searchListings(
+        { workLat: w.p1.lat, workLng: w.p1.lng, priceMin: c.p1Price[0], priceMax: c.p1Price[1], areaMin: c.p1Area[0], areaMax: c.p1Area[1] },
+        { workLat: w.p2.lat, workLng: w.p2.lng, priceMin: c.p2Price[0], priceMax: c.p2Price[1], areaMin: c.p2Area[0], areaMax: c.p2Area[1] },
+      ))
     } catch (e: any) {
       setError(String(e?.message ?? e))
       setListings([])
@@ -749,32 +785,31 @@ export default function App() {
     }
   }
 
-  // 조건 서랍에서 조건을 바꾸면 재검색한다.
+  // 조건 서랍에서 값을 바꾸면 재검색한다(1번 화면에서는 "같이 살자"를 눌러야 검색).
   const updateCond = (c: Conditions) => {
     setCond(c)
-    if (screen !== 1) void runSearch(c)
+    if (screen !== 1) void runSearch(c, workCoords)
   }
 
   const goHome = () => setScreen(1)
   const selectedListing = listings.find(l => l.id === selected) ?? null
 
-<<<<<<< HEAD
   if (screen === 1) {
-    return <InputScreen cond={cond} setCond={setCond} onSubmit={() => { setScreen(2); void runSearch(cond) }} />
+    return <InputScreen cond={cond} setCond={setCond} onSubmit={() => { setScreen(2); void runSearch(cond, workCoords) }} onPickWork={handlePickWork} />
   }
   if (screen === 2 || !selectedListing) {
     return (
       <MapScreen
-        cond={cond} setCond={updateCond} listings={listings} works={works}
-        loading={loading} error={error}
-        onSelect={id => { setSelected(id); setScreen(3) }} onHome={goHome}
+        cond={cond} setCond={updateCond} onSelect={id => { setSelected(id); setScreen(3) }} onHome={goHome}
+        workCoords={workCoords} onPickWork={handlePickWork}
+        listings={listings} loading={loading} error={error}
       />
     )
   }
   return (
     <DetailScreen
-      listing={selectedListing} cond={cond} setCond={updateCond} works={works}
-      onBack={() => setScreen(2)} onHome={goHome}
+      listing={selectedListing} cond={cond} setCond={updateCond} onBack={() => setScreen(2)} onHome={goHome}
+      workCoords={workCoords} onPickWork={handlePickWork}
     />
   )
 }
