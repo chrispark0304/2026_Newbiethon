@@ -136,7 +136,8 @@ class KakaoTransit:
             self._save_cache()
         return result
 
-    def _request(self, origin, dest, s_name, e_name) -> TransitResult | None:
+    def _fetch(self, origin, dest, s_name, e_name) -> dict | None:
+        """HTTP 호출 한 번. 파싱하지 않은 원본 JSON을 돌려준다."""
         params = urllib.parse.urlencode({
             "start_x": f"{origin[1]:.7f}", "start_y": f"{origin[0]:.7f}",
             "end_x": f"{dest[1]:.7f}", "end_y": f"{dest[0]:.7f}",
@@ -148,7 +149,7 @@ class KakaoTransit:
         )
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
-                payload = json.load(resp)
+                return json.load(resp)
         except urllib.error.HTTPError as exc:
             log.warning("카카오 HTTP %s: %s", exc.code, exc.read()[:200])
             return None
@@ -156,6 +157,10 @@ class KakaoTransit:
             log.warning("카카오 요청 실패: %s", exc)
             return None
 
+    def _request(self, origin, dest, s_name, e_name) -> TransitResult | None:
+        payload = self._fetch(origin, dest, s_name, e_name)
+        if not payload:
+            return None
         status = payload.get("status")
         if status != "OK":
             if status not in TERMINAL_STATUS:
@@ -176,6 +181,30 @@ class KakaoTransit:
             mode=str(prop.get("type", "")),
             distance_m=int(prop.get("totalDistance", 0)),
         )
+
+    def raw_route(self, origin: tuple[float, float], dest: tuple[float, float]):
+        """가장 빠른 경로의 **원본 route 객체**를 돌려준다(steps 포함).
+
+        travel_time()은 요약만 캐싱하므로 구간별 정류장·폴리라인이 필요할 때는 이쪽을 쓴다.
+        상세 화면에서 매물 하나에만 호출되므로 캐시 없이 매번 요청한다.
+        """
+        if not self.enabled:
+            return None
+        with self._lock:
+            self._roll_day()
+            if self._calls >= self.daily_budget:
+                log.warning("카카오 일일 예산 소진 (%d건)", self._calls)
+                return None
+            self._calls += 1
+        payload = self._fetch(origin, dest, "집", "직장")
+        with self._lock:
+            self._save_cache()
+        if not payload or payload.get("status") != "OK":
+            return None
+        routes = payload.get("routes") or []
+        if not routes:
+            return None
+        return min(routes, key=lambda r: r.get("properties", {}).get("totalTime", 1 << 30))
 
     def stats(self) -> dict:
         self._roll_day()

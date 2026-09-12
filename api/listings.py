@@ -21,7 +21,10 @@
    두 사람이 나눠 쓴다는 전제로 ROOM_SPLIT 비율로 쪼개는데,
    이건 **데이터가 아니라 가정**이다. 실제 방 구성이 아니다.
 
-4. **거래 건 단위라 같은 호실이 여러 번 나온다.** 주소·건물·층·면적이 모두 같은 행이
+4. **정상 임대차가 아닌 행이 섞여 있다.** 보증금 30만원짜리 "전세" 같은 것들.
+   환산월세 MIN_MONTHLY_EQUIVALENT 미만은 버린다.
+
+5. **거래 건 단위라 같은 호실이 여러 번 나온다.** 주소·건물·층·면적이 모두 같은 행이
    69조 148건 있다. 같은 집의 여러 계약이므로 하나로 합친다(가장 싼 계약 기준).
    층이나 면적이 다르면 별개 호실이므로 남긴다.
 """
@@ -50,6 +53,12 @@ ADDRESS_COORDS = Path(__file__).resolve().parent / "data" / "address_coords.json
 #: 전월세전환율(연). 전세 보증금을 월세로 환산할 때 쓴다.
 #: 한국부동산원 서울 연립다세대 기준 근사치. 시장에 따라 조정할 것.
 JEONSE_CONVERSION_RATE = 0.055
+
+#: 이 값 미만의 환산월세는 정상 임대차로 보지 않고 버린다.
+#: 보증금 30만·80만원짜리 "전세"처럼 입력 오류나 특수관계 거래가 섞여 있는데,
+#: 점수 산식이 "쌀수록 좋다"라 그대로 두면 목록 1위로 올라온다.
+#: 환산월세 1퍼센타일이 26만원이라 20만원은 보수적인 선이다(8,346건 중 30건, 0.36%).
+MIN_MONTHLY_EQUIVALENT = 20
 
 #: 전용면적을 두 방으로 나누는 비율. **데이터가 아니라 가정이다.**
 #: 원본에 방 구성이 없어서, 큰 방/작은 방이 있는 투룸을 상정했다.
@@ -129,6 +138,7 @@ class RtmsListings:
         self.conversion_rate = conversion_rate
         self._coords = self._load_coords(Path(address_coords))
         self.skipped = 0
+        self.outliers = 0
         self._items = self._load()
 
     @staticmethod
@@ -189,6 +199,9 @@ class RtmsListings:
             lease = (row["전월세구분"] or "").strip()
 
             converted = monthly + deposit * self.conversion_rate / 12
+            if converted < MIN_MONTHLY_EQUIVALENT:
+                self.outliers += 1
+                continue
             building = (row.get("건물명") or "").strip()
             floor = (row.get("층") or "").strip()
 
@@ -220,6 +233,7 @@ class SeedListings(RtmsListings):
         import json
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
         self.skipped = 0
+        self.outliers = 0
         self._items = [
             Listing(rent_total=r["rent_total"], area_sqm=sum(r["rooms"]), **{
                 k: v for k, v in r.items() if k not in ("rent_total",)

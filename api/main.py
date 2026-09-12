@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from transit.geo import haversine_m, walk_sec
 from transit.router import INF, CommuteRouter
 
+from .compat import router as compat_router
 from .kakao import KakaoTransit
 from .listings import RtmsListings
 from .schemas import (Assignment, Leg, ListingResult, PersonCommute,
@@ -78,6 +79,10 @@ app.add_middleware(
 )
 
 
+# 프론트엔드 명세(Frontend/BACKEND_INTEGRATION.md) 호환 엔드포인트
+app.include_router(compat_router)
+
+
 @app.get("/api/health")
 def health():
     r = state.get("router")
@@ -87,6 +92,7 @@ def health():
         "listings": len(state["listings"].all()) if state.get("listings") else 0,
         "coords": state["listings"].coord_stats if state.get("listings") else None,
         "skipped_no_coords": state["listings"].skipped if state.get("listings") else 0,
+        "dropped_outliers": state["listings"].outliers if state.get("listings") else 0,
         "commute_provider": COMMUTE_PROVIDER,
         "kakao": state["kakao"].stats() if state.get("kakao") else None,
     }

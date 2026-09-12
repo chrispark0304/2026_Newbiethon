@@ -1,22 +1,15 @@
-import { useState, useRef } from 'react'
-
-const PROPERTIES = [
-  { id: 1, price: 51, neighborhood: '마포구 합정동', address: '합정로 45', floor: 3, area: 24, year: 2018, deposit: 500, x: 38, y: 42 },
-  { id: 2, price: 63, neighborhood: '은평구 녹번동', address: '녹번로 12', floor: 5, area: 30, year: 2021, deposit: 1000, x: 28, y: 28 },
-  { id: 3, price: 45, neighborhood: '서대문구 홍제동', address: '홍제천로 88', floor: 2, area: 20, year: 2015, deposit: 300, x: 22, y: 38 },
-  { id: 4, price: 72, neighborhood: '용산구 효창동', address: '효창원로 6', floor: 7, area: 34, year: 2020, deposit: 1000, x: 50, y: 58 },
-  { id: 5, price: 58, neighborhood: '마포구 망원동', address: '망원로 33', floor: 4, area: 27, year: 2017, deposit: 500, x: 34, y: 52 },
-]
+import { useEffect, useRef, useState } from 'react'
+import { fetchCommute, geocode, searchListings, toXY } from './api'
+import type { ApiStop, Commute, Geo, Listing } from './api'
 
 // Real-world Seoul subway line colors, used so route lines read like an actual transit map
 const LINE_COLORS: Record<string, string> = {
-  '2호선': '#00A84D',
-  '3호선': '#EF7C1C',
-  '4호선': '#00A5DE',
-  '5호선': '#996CAC',
-  '6호선': '#CD7C2F',
-  '9호선': '#BDB092',
-  '경의중앙선': '#77C4A3',
+  '1호선': '#0052A4', '2호선': '#00A84D', '3호선': '#EF7C1C', '4호선': '#00A5DE',
+  '5호선': '#996CAC', '6호선': '#CD7C2F', '7호선': '#747F00', '8호선': '#E6186C',
+  '9호선': '#BDB092', '경의중앙선': '#77C4A3', '경춘선': '#0C8E72', '수인분당선': '#F0B000',
+  '신분당선': '#D4003B', '공항철도': '#0090D2', '서해선': '#81A914', '경강선': '#003DA5',
+  '인천1호선': '#7CA8D5', '인천2호선': '#ED8B00', '우이신설선': '#B0CE18', '신림선': '#6789CA',
+  '김포골드라인': '#A17800', '용인에버라인': '#509F22', '의정부경전철': '#FDA600', 'GTX-A': '#9A6292',
 }
 const BUS_COLOR = '#2563eb'
 
@@ -24,36 +17,22 @@ const BUS_COLOR = '#2563eb'
 // (the first stop in a route has none, since there's no leg before it).
 type Stop = { name: string; x: number; y: number; mode?: 'subway' | 'bus'; line?: string; color?: string }
 
-const subwayLeg = (name: string, x: number, y: number, line: string): Stop => ({ name, x, y, mode: 'subway', line, color: LINE_COLORS[line] })
-const busLeg = (name: string, x: number, y: number, line: string): Stop => ({ name, x, y, mode: 'bus', line, color: BUS_COLOR })
+const pct = ({ x, y }: { x: number; y: number }) => ({ left: `${x}%`, top: `${y}%` })
 
-const ROUTES: { p1: Stop[]; p2: Stop[]; p1_time: number; p2_time: number }[] = [
-  {
-    p1: [{ name: '합정', x: 38, y: 42 }, subwayLeg('당산', 44, 49, '2호선'), subwayLeg('여의도', 50, 53, '9호선'), busLeg('강남', 58, 56, '740')],
-    p2: [{ name: '합정', x: 38, y: 42 }, subwayLeg('홍대입구', 30, 36, '2호선'), subwayLeg('신촌', 22, 30, '경의중앙선')],
-    p1_time: 28, p2_time: 12,
-  },
-  {
-    p1: [{ name: '녹번', x: 28, y: 28 }, subwayLeg('불광', 38, 38, '6호선'), subwayLeg('여의도', 48, 47, '5호선'), busLeg('강남', 58, 56, '472')],
-    p2: [{ name: '녹번', x: 28, y: 28 }, subwayLeg('연신내', 24, 32, '3호선'), subwayLeg('홍대입구', 22, 30, '6호선')],
-    p1_time: 35, p2_time: 22,
-  },
-  {
-    p1: [{ name: '홍제', x: 22, y: 38 }, subwayLeg('무악재', 30, 43, '3호선'), subwayLeg('충정로', 44, 50, '5호선'), busLeg('강남', 58, 56, '361')],
-    p2: [{ name: '홍제', x: 22, y: 38 }, busLeg('홍대입구', 22, 30, '7737')],
-    p1_time: 32, p2_time: 8,
-  },
-  {
-    p1: [{ name: '효창공원앞', x: 50, y: 58 }, subwayLeg('삼각지', 54, 57, '6호선'), busLeg('강남', 58, 56, '143')],
-    p2: [{ name: '효창공원앞', x: 50, y: 58 }, subwayLeg('공덕', 36, 44, '6호선'), subwayLeg('홍대입구', 22, 30, '2호선')],
-    p1_time: 18, p2_time: 20,
-  },
-  {
-    p1: [{ name: '망원', x: 34, y: 52 }, subwayLeg('합정', 40, 53, '6호선'), subwayLeg('당산', 48, 54, '2호선'), busLeg('강남', 58, 56, '472')],
-    p2: [{ name: '망원', x: 34, y: 52 }, subwayLeg('합정', 28, 40, '6호선'), subwayLeg('홍대입구', 22, 30, '2호선')],
-    p1_time: 24, p2_time: 10,
-  },
-]
+/** 전세는 월세가 0이라 "0만원/월"로 찍히면 안 된다. */
+const priceLabel = (p: Listing) =>
+  p.leaseType === '전세'
+    ? `전세 ${(p.deposit / 10000).toFixed(1)}억`
+    : `${p.price}만원/월`
+
+// 백엔드 stop(위경도) → 화면 stop(%좌표). 지도 SDK를 붙이면 toXY만 걷어내면 된다.
+const toStop = (s: ApiStop): Stop => ({
+  name: s.name,
+  ...toXY(s.lat, s.lng),
+  mode: s.mode,
+  line: s.line,
+  color: s.mode === 'bus' ? BUS_COLOR : (s.line ? LINE_COLORS[s.line] ?? '#999' : undefined),
+})
 
 // Shared condition state lifted to App so it persists across screens
 type Conditions = {
@@ -266,7 +245,7 @@ function ConditionsDrawer({ cond, setCond, open, onClose }: {
                   <label className="text-xs text-[#aaa]">면적</label>
                   <span className="text-xs text-[#555]">{local[areaKey][0]}평 – {local[areaKey][1]}평</span>
                 </div>
-                <RangeSlider min={5} max={60} values={local[areaKey]} onChange={v => setLocal({ ...local, [areaKey]: v })} color={color} />
+                <RangeSlider min={5} max={35} values={local[areaKey]} onChange={v => setLocal({ ...local, [areaKey]: v })} color={color} />
               </div>
             </div>
           ))}
@@ -328,7 +307,7 @@ function InputScreen({ cond, setCond, onSubmit }: { cond: Conditions; setCond: (
                   <label className="text-xs text-[#bbb]">면적</label>
                   <span className="text-xs text-[#666]">{cond[areaKey][0]}평 – {cond[areaKey][1]}평</span>
                 </div>
-                <RangeSlider min={5} max={60} values={cond[areaKey]} onChange={v => setCond({ ...cond, [areaKey]: v })} color={color} />
+                <RangeSlider min={5} max={35} values={cond[areaKey]} onChange={v => setCond({ ...cond, [areaKey]: v })} color={color} />
               </div>
             </div>
           ))}
@@ -346,7 +325,12 @@ function InputScreen({ cond, setCond, onSubmit }: { cond: Conditions; setCond: (
 }
 
 // Screen 2
-function MapScreen({ cond, setCond, onSelect, onHome }: { cond: Conditions; setCond: (c: Conditions) => void; onSelect: (id: number) => void; onHome: () => void }) {
+function MapScreen({ cond, setCond, listings, works, loading, error, onSelect, onHome }: {
+  cond: Conditions; setCond: (c: Conditions) => void
+  listings: Listing[]; works: { p1: Geo; p2: Geo } | null
+  loading: boolean; error: string | null
+  onSelect: (id: number) => void; onHome: () => void
+}) {
   const [hovered, setHovered] = useState<number | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
 
@@ -356,7 +340,7 @@ function MapScreen({ cond, setCond, onSelect, onHome }: { cond: Conditions; setC
         <button onClick={onHome} className="flex items-center gap-2.5 hover:opacity-70 transition-opacity">
           <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M10 2L3 8v10h5v-5h4v5h5V8L10 2z" fill="#2d2a24" /></svg>
           <span className="text-sm font-500 text-[#2d2a24]">같이살집</span>
-          <span className="text-xs text-[#bbb] ml-1">매물 {PROPERTIES.length}개</span>
+          <span className="text-xs text-[#bbb] ml-1">{loading ? '불러오는 중…' : `매물 ${listings.length}개`}</span>
         </button>
         <button
           onClick={() => setDrawerOpen(true)}
@@ -369,7 +353,13 @@ function MapScreen({ cond, setCond, onSelect, onHome }: { cond: Conditions; setC
 
       <div className="flex-1 flex overflow-hidden">
         <aside className="w-[240px] border-r border-[#ede9e2] overflow-y-auto scroll-hide flex-shrink-0 bg-white">
-          {PROPERTIES.map(p => (
+          {error && <div className="px-4 py-6 text-xs text-[#c0392b] leading-relaxed">{error}</div>}
+          {!error && !loading && listings.length === 0 && (
+            <div className="px-4 py-6 text-xs text-[#999] leading-relaxed">
+              조건에 맞는 매물이 없어요.<br />가격이나 평수 범위를 넓혀보세요.
+            </div>
+          )}
+          {listings.map(p => (
             <button
               key={p.id}
               onClick={() => onSelect(p.id)}
@@ -381,9 +371,13 @@ function MapScreen({ cond, setCond, onSelect, onHome }: { cond: Conditions; setC
                 <svg width="16" height="16" viewBox="0 0 20 20" fill="none"><path d="M10 2L3 8v10h5v-5h4v5h5V8L10 2z" fill="#aaa" /></svg>
               </div>
               <div className="flex-1 min-w-0">
-                <div className="text-sm font-600 text-[#2d2a24]">{p.price}만원<span className="font-400 text-[#bbb] text-xs">/월</span></div>
+                <div className="text-sm font-600 text-[#2d2a24]">{priceLabel(p)}</div>
                 <div className="text-xs text-[#999] mt-0.5 truncate">{p.neighborhood}</div>
                 <div className="text-xs text-[#bbb] mt-0.5">{p.floor}층 · {p.area}평</div>
+                <div className="text-[10px] text-[#bbb] mt-1">
+                  통근 {p.commuteMinutes[0]}분 · {p.commuteMinutes[1]}분
+                  {p.nearestStation && ` · ${p.nearestStation.name} 도보 ${p.nearestStation.walkMin}분`}
+                </div>
               </div>
             </button>
           ))}
@@ -391,19 +385,19 @@ function MapScreen({ cond, setCond, onSelect, onHome }: { cond: Conditions; setC
 
         <div className="flex-1 relative">
           <MapBackground />
-          <WorkMarker x={58} y={56} color="#16a34a" label={cond.p1Work} />
-          <WorkMarker x={22} y={30} color="#7c3aed" label={cond.p2Work} />
-          {PROPERTIES.map(p => (
+          {works && <WorkMarker {...toXY(works.p1.lat, works.p1.lng)} color="#16a34a" label={cond.p1Work} />}
+          {works && <WorkMarker {...toXY(works.p2.lat, works.p2.lng)} color="#7c3aed" label={cond.p2Work} />}
+          {listings.map(p => (
             <button
               key={p.id}
               onClick={() => onSelect(p.id)}
               onMouseEnter={() => setHovered(p.id)}
               onMouseLeave={() => setHovered(null)}
               className="absolute z-30"
-              style={{ left: `${p.x}%`, top: `${p.y}%`, transform: 'translate(-50%, -50%)' }}
+              style={{ ...pct(toXY(p.lat, p.lng)), transform: 'translate(-50%, -50%)' }}
             >
               <div className={`px-2.5 py-1 text-xs font-600 rounded-full border shadow-sm transition-all ${hovered === p.id ? 'bg-[#2d2a24] text-white border-[#2d2a24] shadow-md' : 'bg-white text-[#2d2a24] border-[#ddd] hover:border-[#999]'}`}>
-                {p.price}만
+                {p.leaseType === '전세' ? `전세 ${(p.deposit / 10000).toFixed(1)}억` : `${p.price}만`}
               </div>
             </button>
           ))}
@@ -416,10 +410,32 @@ function MapScreen({ cond, setCond, onSelect, onHome }: { cond: Conditions; setC
 }
 
 // Screen 3
-function DetailScreen({ propertyId, cond, setCond, onBack, onHome }: { propertyId: number; cond: Conditions; setCond: (c: Conditions) => void; onBack: () => void; onHome: () => void }) {
-  const p = PROPERTIES.find(x => x.id === propertyId)!
-  const route = ROUTES[propertyId - 1]
+function DetailScreen({ listing, cond, setCond, works, onBack, onHome }: {
+  listing: Listing; cond: Conditions; setCond: (c: Conditions) => void
+  works: { p1: Geo; p2: Geo } | null
+  onBack: () => void; onHome: () => void
+}) {
+  const p = listing
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [commute, setCommute] = useState<Commute | null>(null)
+  const [routeError, setRouteError] = useState<string | null>(null)
+
+  // 경로는 이 화면에 들어올 때만 부른다(명세의 lazy 호출). 목록 단계에서는 시간만 온다.
+  useEffect(() => {
+    if (!works) return
+    let alive = true
+    setCommute(null); setRouteError(null)
+    fetchCommute(p.id, works.p1, works.p2)
+      .then(c => { if (alive) setCommute(c) })
+      .catch(e => { if (alive) setRouteError(String(e.message ?? e)) })
+    return () => { alive = false }
+  }, [p.id, works])
+
+  // 경로가 오기 전에는 목록에서 받은 통근시간만으로 그린다.
+  const legs = [
+    { color: '#16a34a', label: cond.p1Work, stops: (commute?.p1.stops ?? []).map(toStop), minutes: commute?.p1.minutes ?? p.commuteMinutes[0] },
+    { color: '#7c3aed', label: cond.p2Work, stops: (commute?.p2.stops ?? []).map(toStop), minutes: commute?.p2.minutes ?? p.commuteMinutes[1] },
+  ]
 
   return (
     <div className="h-screen flex flex-col bg-[#faf9f7]">
@@ -451,8 +467,11 @@ function DetailScreen({ propertyId, cond, setCond, onBack, onHome }: { propertyI
           </div>
 
           <div className="p-5 flex-1">
-            <div className="text-2xl font-600 text-[#2d2a24] mb-0.5">{p.price}만원<span className="text-sm font-400 text-[#bbb]">/월</span></div>
-            <div className="text-xs text-[#bbb] mb-5">보증금 {p.deposit}만원</div>
+            <div className="text-2xl font-600 text-[#2d2a24] mb-0.5">{priceLabel(p)}</div>
+            <div className="text-xs text-[#bbb] mb-5">
+              {p.leaseType === '전세' ? `환산 월세 ${p.monthlyEquivalent}만원` : `보증금 ${p.deposit.toLocaleString()}만원`}
+              {p.buildingName && ` · ${p.buildingName}`}
+            </div>
 
             <div className="grid grid-cols-2 gap-2">
               {[['면적', `${p.area}평`], ['층수', `${p.floor}층`], ['건축년도', `${p.year}년`], ['주소', p.address]].map(([k, v]) => (
@@ -464,11 +483,11 @@ function DetailScreen({ propertyId, cond, setCond, onBack, onHome }: { propertyI
             </div>
 
             <div className="mt-5 pt-5 border-t border-[#ede9e2] space-y-3.5">
-              <div className="text-xs text-[#bbb] mb-1">통근 시간</div>
-              {[
-                { color: '#16a34a', label: cond.p1Work, stops: route.p1, minutes: route.p1_time },
-                { color: '#7c3aed', label: cond.p2Work, stops: route.p2, minutes: route.p2_time },
-              ].map(({ color, label, stops, minutes }) => (
+              <div className="text-xs text-[#bbb] mb-1">
+                통근 시간{!commute && !routeError && <span className="ml-1 text-[#ccc]">경로 불러오는 중…</span>}
+                {routeError && <span className="ml-1 text-[#c0392b]">경로를 불러오지 못했어요</span>}
+              </div>
+              {legs.map(({ color, label, stops, minutes }) => (
                 <div key={label} className="flex items-start gap-2.5">
                   <span className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{ background: color }} />
                   <div className="flex-1">
@@ -494,18 +513,16 @@ function DetailScreen({ propertyId, cond, setCond, onBack, onHome }: { propertyI
         <div className="flex-1 relative">
           <MapBackground />
           <svg className="absolute inset-0 w-full h-full pointer-events-none">
-            <TransitRoute stops={route.p1} personColor="#16a34a" />
-            <TransitRoute stops={route.p2} personColor="#7c3aed" />
+            {legs.map(({ stops, color }) => stops.length > 1 && <TransitRoute key={color} stops={stops} personColor={color} />)}
           </svg>
-          <TransitLegBadges stops={route.p1} />
-          <TransitLegBadges stops={route.p2} />
-          <div className="absolute z-20" style={{ left: `${p.x}%`, top: `${p.y}%`, transform: 'translate(-50%, -50%)' }}>
+          {legs.map(({ stops, color }) => stops.length > 1 && <TransitLegBadges key={color} stops={stops} />)}
+          <div className="absolute z-20" style={{ ...pct(toXY(p.lat, p.lng)), transform: 'translate(-50%, -50%)' }}>
             <div className="w-9 h-9 rounded-full bg-[#2d2a24] flex items-center justify-center shadow-lg">
               <svg width="16" height="16" viewBox="0 0 20 20" fill="none"><path d="M10 2L3 8v10h5v-5h4v5h5V8L10 2z" fill="white" /></svg>
             </div>
           </div>
-          <WorkMarker x={58} y={56} color="#16a34a" label={cond.p1Work} />
-          <WorkMarker x={22} y={30} color="#7c3aed" label={cond.p2Work} />
+          {works && <WorkMarker {...toXY(works.p1.lat, works.p1.lng)} color="#16a34a" label={cond.p1Work} />}
+          {works && <WorkMarker {...toXY(works.p2.lat, works.p2.lng)} color="#7c3aed" label={cond.p2Work} />}
           <div className="absolute bottom-4 right-4 bg-white/90 backdrop-blur-sm border border-[#ede9e2] rounded-xl px-3 py-2.5 text-xs space-y-1.5 shadow-sm max-w-[160px]">
             {[['#16a34a', '사람 1 경로'], ['#7c3aed', '사람 2 경로']].map(([color, label]) => (
               <div key={label} className="flex items-center gap-2">
@@ -532,17 +549,61 @@ function DetailScreen({ propertyId, cond, setCond, onBack, onHome }: { propertyI
 
 export default function App() {
   const [screen, setScreen] = useState<1 | 2 | 3>(1)
-  const [selected, setSelected] = useState(1)
+  const [selected, setSelected] = useState<number | null>(null)
   const [cond, setCond] = useState<Conditions>({
     p1Work: '강남역', p2Work: '홍대입구역',
     p1Price: [30, 70], p2Price: [40, 80],
-    p1Area: [15, 35], p2Area: [20, 40],
+    p1Area: [7, 18], p2Area: [8, 20],
   })
+  const [works, setWorks] = useState<{ p1: Geo; p2: Geo } | null>(null)
+  const [listings, setListings] = useState<Listing[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  const handleSelect = (id: number) => { setSelected(id); setScreen(3) }
+  /** 조건 확정 → 직장 2곳 지오코딩 → 매물 검색. 화면 전환은 먼저 해서 대기 상태를 보여 준다. */
+  const runSearch = async (c: Conditions) => {
+    setLoading(true); setError(null)
+    try {
+      const [p1, p2] = await Promise.all([geocode(c.p1Work), geocode(c.p2Work)])
+      setWorks({ p1, p2 })
+      const found = await searchListings(
+        { workLat: p1.lat, workLng: p1.lng, priceMin: c.p1Price[0], priceMax: c.p1Price[1], areaMin: c.p1Area[0], areaMax: c.p1Area[1] },
+        { workLat: p2.lat, workLng: p2.lng, priceMin: c.p2Price[0], priceMax: c.p2Price[1], areaMin: c.p2Area[0], areaMax: c.p2Area[1] },
+      )
+      setListings(found)
+    } catch (e: any) {
+      setError(String(e?.message ?? e))
+      setListings([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // 조건 서랍에서 조건을 바꾸면 재검색한다.
+  const updateCond = (c: Conditions) => {
+    setCond(c)
+    if (screen !== 1) void runSearch(c)
+  }
+
   const goHome = () => setScreen(1)
+  const selectedListing = listings.find(l => l.id === selected) ?? null
 
-  if (screen === 1) return <InputScreen cond={cond} setCond={setCond} onSubmit={() => setScreen(2)} />
-  if (screen === 2) return <MapScreen cond={cond} setCond={setCond} onSelect={handleSelect} onHome={goHome} />
-  return <DetailScreen propertyId={selected} cond={cond} setCond={setCond} onBack={() => setScreen(2)} onHome={goHome} />
+  if (screen === 1) {
+    return <InputScreen cond={cond} setCond={setCond} onSubmit={() => { setScreen(2); void runSearch(cond) }} />
+  }
+  if (screen === 2 || !selectedListing) {
+    return (
+      <MapScreen
+        cond={cond} setCond={updateCond} listings={listings} works={works}
+        loading={loading} error={error}
+        onSelect={id => { setSelected(id); setScreen(3) }} onHome={goHome}
+      />
+    )
+  }
+  return (
+    <DetailScreen
+      listing={selectedListing} cond={cond} setCond={updateCond} works={works}
+      onBack={() => setScreen(2)} onHome={goHome}
+    />
+  )
 }

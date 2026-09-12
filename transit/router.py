@@ -21,8 +21,12 @@ INF = 1 << 30
 @dataclass
 class Leg:
     kind: str          # walk | ride
-    detail: str
+    detail: str        # 사람이 읽는 한 줄 설명
     seconds: int
+    #: 구조화 필드. 문자열 detail을 파싱하지 않고 바로 쓰라고 둔 것.
+    route_name: str = ""      # ride일 때 노선명
+    from_stop: str = ""
+    to_stop: str = ""
 
 
 @dataclass
@@ -129,14 +133,16 @@ class CommuteRouter:
         return Commute(best, self.g.stops[best_node].stop_name, legs)
 
     def _explain(self, start_node: int, access_walk: int, dist, parent) -> list[Leg]:
-        legs = [Leg("walk", f"집 → {self.g.stops[start_node].stop_name}", access_walk)]
+        legs = [Leg("walk", f"집 → {self.g.stops[start_node].stop_name}", access_walk,
+                    from_stop="집", to_stop=self.g.stops[start_node].stop_name)]
         node, guard = start_node, 0
         cur_route, cur_from, cur_cost = None, None, 0
 
         def flush():
             nonlocal cur_route, cur_from, cur_cost
             if cur_route is not None:
-                legs.append(Leg("ride", f"{cur_route}  {cur_from} → {last_stop}", cur_cost))
+                legs.append(Leg("ride", f"{cur_route}  {cur_from} → {last_stop}", cur_cost,
+                                route_name=cur_route, from_stop=cur_from, to_stop=last_stop))
                 cur_route, cur_from, cur_cost = None, None, 0
 
         last_stop = ""
@@ -156,7 +162,10 @@ class CommuteRouter:
                 flush()
             elif node < self.g.n_stops and nxt < self.g.n_stops:   # 도보 환승
                 flush()
-                legs.append(Leg("walk", f"{self.g.stops[node].stop_name} → {self.g.stops[nxt].stop_name}", step))
+                legs.append(Leg("walk",
+                                f"{self.g.stops[node].stop_name} → {self.g.stops[nxt].stop_name}", step,
+                                from_stop=self.g.stops[node].stop_name,
+                                to_stop=self.g.stops[nxt].stop_name))
             node = nxt
         flush()
         return [l for l in legs if l.seconds > 0]
