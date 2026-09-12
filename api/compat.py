@@ -83,6 +83,10 @@ def geocode(query: str = Query(..., min_length=1, max_length=80)):
 class PersonCriteria(BaseModel):
     workLat: float
     workLng: float
+    #: 이 사람이 부담할 보증금 범위(만원). 월세와 마찬가지로 두 사람 값을 더해 비교한다.
+    #: 프론트가 안 보내면(구버전 등) 기본값이 전체 범위라 아무것도 거르지 않는다.
+    depositMin: float = 0
+    depositMax: float = Field(default=1e9)
     #: 이 사람이 부담할 월세 범위(만원). 두 사람 값을 더해 매물 총액과 비교한다.
     priceMin: float = 0
     priceMax: float = Field(default=1e9)
@@ -105,23 +109,24 @@ class SearchBody(BaseModel):
     maxPerDong: int = Field(default=3, ge=0, le=50)
 
 
-def _criteria_to_ranges(body: SearchBody) -> tuple[tuple[float, float], tuple[float, float]]:
+def _criteria_to_ranges(body: SearchBody) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]]:
     """1인 기준 조건 두 개 → 매물 전체에 적용할 범위.
 
     **돈은 나눠 내고 집은 같이 쓴다.** 그래서 둘을 다르게 합친다.
 
-      가격: 합집합(더한다). p1이 70까지, p2가 80까지 내면 150만원짜리 집을 볼 수 있다.
+      보증금·가격: 합집합(더한다). p1이 70까지, p2가 80까지 내면 150만원짜리 집을 볼 수 있다.
       면적: 교집합. "이 집이 8~20평이면 좋겠다"는 집 전체에 대한 희망이므로,
             둘 다 만족하는 구간만 남긴다. 더하면 35~75평이 되어 연립다세대에는
             해당 매물이 거의 없다(8,317건 중 62건).
     """
+    deposit = (body.p1.depositMin + body.p2.depositMin, body.p1.depositMax + body.p2.depositMax)
     price = (body.p1.priceMin + body.p2.priceMin, body.p1.priceMax + body.p2.priceMax)
     lo = max(body.p1.areaMin, body.p2.areaMin) * SQM_PER_PYEONG
     hi = min(body.p1.areaMax, body.p2.areaMax) * SQM_PER_PYEONG
     if hi < lo:                       # 두 사람 희망이 안 겹치면 합집합으로 넓혀 준다
         lo = min(body.p1.areaMin, body.p2.areaMin) * SQM_PER_PYEONG
         hi = max(body.p1.areaMax, body.p2.areaMax) * SQM_PER_PYEONG
-    return price, (lo, hi)
+    return deposit, price, (lo, hi)
 
 
 @router.post("/api/listings/search")
@@ -130,26 +135,30 @@ def listings_search(body: SearchBody):
 
     router_ = state["router"]
     items = state["listings"].all()
-    price, area = _criteria_to_ranges(body)
+    deposit, price, area = _criteria_to_ranges(body)
 
     fields = []
     for label, p in (("p1", body.p1), ("p2", body.p2)):
         try:
-            fields.append(router_.times_to(p.workLat, p.workLng)[0])
+            fields.append(router_.times_to(p.workLat, p.workLng))
         except ValueError:
             raise HTTPException(422, f"{label} 직장 반경에 역이 없습니다. 좌표를 확인해 주세요.")
 
     # 환산월세로 거른다. 전세는 월세가 0이라 월세만 보면 비교가 안 된다.
+    # 보증금은 환산월세와 별개로 한 번 더 거른다 — "월세는 맞는데 보증금이 너무 높다"는
+    # 경우를 잡아내려면 환산월세(rent_total) 하나만으로는 부족하다.
     pool = [l for l in items
-            if price[0] <= l.rent_total <= price[1] and area[0] <= l.area_sqm <= area[1]]
+            if price[0] <= l.rent_total <= price[1]
+            and deposit[0] <= l.deposit <= deposit[1]
+            and area[0] <= l.area_sqm <= area[1]]
 
     cache: dict[tuple[float, float], list[int]] = {}
     out = []
     for l in pool:
         key = (l.lat, l.lon)
         if key not in cache:
-            cache[key] = [router_.commute(l.lat, l.lon, f, radius_m=LISTING_ACCESS_WALK_M).total_sec
-                          for f in fields]
+            cache[key] = [router_.commute(l.lat, l.lon, dist, radius_m=LISTING_ACCESS_WALK_M).total_sec
+                          for dist, _parent in fields]
         secs = cache[key]
         if any(s >= INF for s in secs):
             continue
@@ -182,6 +191,16 @@ def listings_search(body: SearchBody):
                 break
         out = kept
 
+    # 환승 횟수는 정렬/필터에는 안 쓰지만 프론트 "환승 적은 순" 정렬 버튼에 필요하다.
+    # 경로를 전부 복원(_explain)해야 나오는 값이라 후보 풀 전체에 대해 하면 느리므로,
+    # 최종 응답에 실제로 담기는 만큼(최대 body.limit건)만 여기서 한 번 더 계산한다.
+    def _transfers(l) -> list[int]:
+        counts = []
+        for dist, parent in fields:
+            c = router_.commute(l.lat, l.lon, dist, parent=parent, radius_m=LISTING_ACCESS_WALK_M)
+            counts.append(max(0, sum(1 for leg in c.legs if leg.kind == "ride") - 1))
+        return counts
+
     station = state["stations"]
     return [{
         "id": _listing_no(l),
@@ -201,6 +220,7 @@ def listings_search(body: SearchBody):
         "nearestStation": (lambda s: {"name": s.name, "lines": s.lines, "walkMin": s.walk_min}
                            if s else None)(station.get(l.id)),
         "commuteMinutes": minutes,
+        "transfers": _transfers(l),
         "jointScore": joint,
     } for joint, minutes, l in out[: body.limit]]
 

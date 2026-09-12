@@ -1,0 +1,27 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600&display=swap');
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Outfit', sans-serif;
+  --color-p1: #16a34a;
+  --color-p2: #7c3aed;
+}
+
+* {
+  font-family: 'Outfit', sans-serif;
+}
+
+body {
+  background: #ffffff;
+  color: #111111;
+}
+
+/* Hide scrollbar but keep scrollable */
+.scroll-hide {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scroll-hide::-webkit-scrollbar {
+  display: none;
+}
+
