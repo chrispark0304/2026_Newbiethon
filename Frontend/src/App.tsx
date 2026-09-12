@@ -92,11 +92,20 @@ function RangeValue({ values, min, max, unit, format, onChange }: {
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<[string, string]>(['', ''])
+  const firstInputRef = useRef<HTMLInputElement>(null)
 
   const open = () => {
     setDraft([String(values[0]), String(values[1])])
     setEditing(true)
   }
+
+  // autoFocus can lose the race when the input is created inside the same click that
+  // opens it (the browser's own focus-after-mousedown timing varies), which reads as
+  // "박스는 뜨는데 타이핑이 안 먹힌다" — focusing explicitly once the input is actually
+  // in the DOM sidesteps that.
+  useEffect(() => {
+    if (editing) firstInputRef.current?.focus()
+  }, [editing])
 
   const commit = () => {
     const clamp = (n: number) => Math.max(min, Math.min(max, n))
@@ -120,16 +129,23 @@ function RangeValue({ values, min, max, unit, format, onChange }: {
   }
 
   return (
-    <span className="flex items-center gap-1 text-xs text-[#555]">
+    <span
+      className="flex items-center gap-1 text-xs text-[#555]"
+      onBlur={e => {
+        // 첫 칸에서 두 번째 칸으로 탭/클릭으로 넘어가는 것도 "그 칸에서의 blur"라
+        // 여기서 막지 않으면 커밋+닫힘이 매번 일어나 버린다. 포커스가 이 위젯
+        // 바깥으로 완전히 나갈 때만 커밋한다.
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) commit()
+      }}
+    >
       {[0, 1].map(i => (
         <Fragment key={i}>
           {i === 1 && <span className="text-[#bbb]">–</span>}
           <input
-            autoFocus={i === 0}
+            ref={i === 0 ? firstInputRef : undefined}
             inputMode="decimal"
             value={draft[i]}
             onChange={e => setDraft(d => (i === 0 ? [e.target.value, d[1]] : [d[0], e.target.value]))}
-            onBlur={commit}
             onKeyDown={e => {
               if (e.key === 'Enter') commit()
               if (e.key === 'Escape') setEditing(false)
@@ -725,7 +741,7 @@ function ConditionsDrawer({ cond, open, onClose, onApply }: {
                   <div>
                     <div className="flex justify-between mb-2">
                       <label className="text-xs text-[#aaa]">월세</label>
-                      <RangeValue values={local[priceKey]} min={0} max={PRICE_MAX} unit="만원" format={v => `${v}만`} onChange={v => setLocal({ ...local, [priceKey]: v })} />
+                      <RangeValue values={local[priceKey]} min={10} max={PRICE_MAX} unit="만원" format={v => `${v}만`} onChange={v => setLocal({ ...local, [priceKey]: v })} />
                     </div>
                     <RangeSlider min={10} max={PRICE_MAX} values={local[priceKey]} onChange={v => setLocal({ ...local, [priceKey]: v })} color={color} />
                   </div>
@@ -735,7 +751,7 @@ function ConditionsDrawer({ cond, open, onClose, onApply }: {
               <div>
                 <div className="flex justify-between mb-2">
                   <label className="text-xs text-[#aaa]">면적</label>
-                  <RangeValue values={local[areaKey]} min={1} max={AREA_MAX} unit="평" format={v => `${v}평`} onChange={v => setLocal({ ...local, [areaKey]: v })} />
+                  <RangeValue values={local[areaKey]} min={5} max={AREA_MAX} unit="평" format={v => `${v}평`} onChange={v => setLocal({ ...local, [areaKey]: v })} />
                 </div>
                 <RangeSlider min={5} max={AREA_MAX} values={local[areaKey]} onChange={v => setLocal({ ...local, [areaKey]: v })} color={color} />
               </div>
@@ -812,7 +828,7 @@ function InputScreen({ cond, setCond, onSubmit, onPickWork, loading, error, pick
                   <div>
                     <div className="flex justify-between mb-2">
                       <label className="text-xs text-[#bbb]">월세</label>
-                      <RangeValue values={cond[priceKey]} min={0} max={PRICE_MAX} unit="만원" format={v => `${v}만`} onChange={v => setCond({ ...cond, [priceKey]: v })} />
+                      <RangeValue values={cond[priceKey]} min={10} max={PRICE_MAX} unit="만원" format={v => `${v}만`} onChange={v => setCond({ ...cond, [priceKey]: v })} />
                     </div>
                     <RangeSlider min={10} max={PRICE_MAX} values={cond[priceKey]} onChange={v => setCond({ ...cond, [priceKey]: v })} color={color} />
                   </div>
@@ -822,7 +838,7 @@ function InputScreen({ cond, setCond, onSubmit, onPickWork, loading, error, pick
               <div>
                 <div className="flex justify-between mb-2">
                   <label className="text-xs text-[#bbb]">면적</label>
-                  <RangeValue values={cond[areaKey]} min={1} max={AREA_MAX} unit="평" format={v => `${v}평`} onChange={v => setCond({ ...cond, [areaKey]: v })} />
+                  <RangeValue values={cond[areaKey]} min={5} max={AREA_MAX} unit="평" format={v => `${v}평`} onChange={v => setCond({ ...cond, [areaKey]: v })} />
                 </div>
                 <RangeSlider min={5} max={AREA_MAX} values={cond[areaKey]} onChange={v => setCond({ ...cond, [areaKey]: v })} color={color} />
               </div>
@@ -1369,12 +1385,19 @@ export default function App() {
       if (await runSearch(cond, workCoords)) setScreen(2)
     }
     // 직장 텍스트를 직접 고치면 "확정" 표시를 푼다. 드롭다운에서 다시 골라야 확정된다.
+    //
+    // 여기서 applyConditions를 부르면 안 된다 — 그 안의 지오코딩 루프는 debounce가 없어서,
+    // 슬라이더를 움직이거나 글자를 한 자씩 칠 때마다 카카오 API를 그대로 호출해 버린다
+    // (직장란은 아직 다 안 쳤는데 "강", "강남", "강남역"이 각각 따로 조회되고, 응답
+    // 순서가 뒤바뀌면 엉뚱한 좌표로 굳어지기도 한다). applyConditions는 명세대로 "다시
+    // 검색"처럼 명시적으로 확정하는 순간에만 부르고, 입력 중에는 그냥 로컬 상태만
+    // 갱신한다 — 지오코딩은 위쪽의 debounce된 useEffect가 알아서 따라간다.
     const setCondFromInput = (c: Conditions) => {
       setPickedWorks(w => ({
         p1Work: c.p1Work === cond.p1Work ? w.p1Work : false,
         p2Work: c.p2Work === cond.p2Work ? w.p2Work : false,
       }))
-      applyConditions(c, {})
+      setCond(c)
     }
     return (
       <InputScreen
