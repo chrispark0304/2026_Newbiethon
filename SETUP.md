@@ -1,14 +1,14 @@
 # 로컬 실행
 
-`git pull` 후 **환경변수 파일 두 개를 직접 만들어야** 합니다. 둘 다 gitignore라 저장소로 전달되지 않습니다.
+`git pull` 후 **환경변수 파일 두 개를 복사**하면 됩니다. `.env` 자체는 gitignore라 저장소로
+전달되지 않지만, 양식(`.env.example`)에 팀 공용 키가 들어 있어 값을 따로 채울 필요는 없습니다.
 
 ## 1. 백엔드
 
 ```bash
 pip install -r api/requirements.txt
 
-cp api/.env.example api/.env
-# api/.env 를 열어 KAKAO_REST_API_KEY 를 채운다
+cp api/.env.example api/.env      # 키가 이미 들어 있습니다
 
 uvicorn api.main:app --port 8000
 ```
@@ -19,8 +19,7 @@ uvicorn api.main:app --port 8000
 ## 2. 프론트엔드
 
 ```bash
-cp Frontend/.env.example Frontend/.env.local
-# Frontend/.env.local 을 열어 VITE_KAKAO_JS_KEY 를 채운다
+cp Frontend/.env.example Frontend/.env.local   # 키가 이미 들어 있습니다
 
 cd Frontend
 npm install
@@ -42,6 +41,9 @@ npx vite --port 8443 --host localhost
 | **JavaScript 키** | `Frontend/.env.local` | 지도 타일, 장소검색 자동완성 (브라우저에 노출됨) |
 
 카카오 개발자 콘솔의 같은 애플리케이션 안에 둘 다 있습니다.
+
+> 해커톤 편의상 두 키를 `.env.example`에 그대로 넣어 뒀습니다.
+> 저장소가 공개면 키도 공개된 상태이니, **행사가 끝나면 콘솔에서 재발급**하세요.
 
 ## 자주 겪는 증상
 
