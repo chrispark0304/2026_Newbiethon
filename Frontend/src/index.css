@@ -16,6 +16,19 @@ body {
   color: #111111;
 }
 
+/* Inline notices settle in rather than snapping — 4px is enough to read as
+   "this just appeared" without drawing attention away from the form. */
+@keyframes notice-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+.notice-in {
+  animation: notice-in 0.26s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .notice-in { animation: none; }
+}
+
 /* Hide scrollbar but keep scrollable */
 .scroll-hide {
   scrollbar-width: none;

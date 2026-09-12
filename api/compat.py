@@ -14,7 +14,7 @@ import os
 import urllib.parse
 import urllib.request
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from transit.router import INF
@@ -98,7 +98,10 @@ class PersonCriteria(BaseModel):
 class SearchBody(BaseModel):
     p1: PersonCriteria
     p2: PersonCriteria
-    limit: int = Field(default=60, ge=1, le=300)
+    #: 오류 문구에 쓸 직장 표시명. 없어도 동작한다.
+    p1Name: str = ""
+    p2Name: str = ""
+    limit: int = Field(default=100, ge=1, le=300)
 
     # --- 아래는 명세 밖. 프론트가 안 보내면 기본값으로 동작한다 ---
     #: 더 오래 걸리는 쪽 통근이 이 값을 넘으면 제외. 0이면 제한 없음.
@@ -118,6 +121,10 @@ def _criteria_to_ranges(body: SearchBody) -> tuple[tuple[float, float], tuple[fl
       면적: 교집합. "이 집이 8~20평이면 좋겠다"는 집 전체에 대한 희망이므로,
             둘 다 만족하는 구간만 남긴다. 더하면 35~75평이 되어 연립다세대에는
             해당 매물이 거의 없다(8,317건 중 62건).
+
+    **범위가 안 겹치면 빈 구간을 그대로 돌려준다.** 한쪽이 10평 이하를 원하고 다른 쪽이
+    15평 이상을 원하면 둘 다 만족하는 집은 없다. 억지로 넓혀 주면 두 사람 조건을 모두
+    어긴 매물이 나가므로, 결과 없음으로 두고 프론트에 이유를 알려 주는 편이 정직하다.
     """
     deposit = (body.p1.depositMin + body.p2.depositMin, body.p1.depositMax + body.p2.depositMax)
     price = (body.p1.priceMin + body.p2.priceMin, body.p1.priceMax + body.p2.priceMax)
@@ -130,19 +137,24 @@ def _criteria_to_ranges(body: SearchBody) -> tuple[tuple[float, float], tuple[fl
 
 
 @router.post("/api/listings/search")
-def listings_search(body: SearchBody):
-    from .main import LISTING_ACCESS_WALK_M, state
+def listings_search(body: SearchBody, response: Response):
+    from .main import LISTING_ACCESS_WALK_M, WORK_ACCESS_WALK_M, state
 
     router_ = state["router"]
     items = state["listings"].all()
     deposit, price, area = _criteria_to_ranges(body)
 
     fields = []
-    for label, p in (("p1", body.p1), ("p2", body.p2)):
+    for label, p, text in (("p1", body.p1, body.p1Name), ("p2", body.p2, body.p2Name)):
         try:
             fields.append(router_.times_to(p.workLat, p.workLng))
         except ValueError:
-            raise HTTPException(422, f"{label} 직장 반경에 역이 없습니다. 좌표를 확인해 주세요.")
+            where = f"'{text}' 주변" if text else f"{label} 직장 주변"
+            raise HTTPException(422, {
+                "code": "WORK_NO_STATION",
+                "message": (f"{where}에 지하철역이 없어요. "
+                            f"역 이름이나 더 구체적인 장소로 검색해 보세요."),
+            })
 
     # 환산월세로 거른다. 전세는 월세가 0이라 월세만 보면 비교가 안 된다.
     # 보증금은 환산월세와 별개로 한 번 더 거른다 — "월세는 맞는데 보증금이 너무 높다"는
@@ -168,9 +180,10 @@ def listings_search(body: SearchBody):
         # 통근시간만 보면 예산 상한에 붙은 비싼 집과 훨씬 싼 집이 동급이 된다.
         # 가격·면적·통근을 함께 보고, 두 사람 만족도 격차에 벌점을 준다.
         score = evaluate(l, minutes, price, (area[0], area[1]))
-        out.append((score.joint, minutes, l))
+        out.append((score.joint, minutes, l, score.balance))
 
     out.sort(key=lambda x: -x[0])
+    total_matched = len(out)          # 다양성 제한·limit으로 자르기 전 개수
 
     # 같은 건물·같은 동네가 목록을 덮는 걸 막는다. 상위 60건이 11개 동에 몰리던 문제.
     if body.maxPerBuilding or body.maxPerDong:
@@ -222,7 +235,8 @@ def listings_search(body: SearchBody):
         "commuteMinutes": minutes,
         "transfers": _transfers(l),
         "jointScore": joint,
-    } for joint, minutes, l in out[: body.limit]]
+        "balanceScore": balance,
+    } for joint, minutes, l, balance in out[: body.limit]]
 
 
 # --------------------------------------------------------------- (C) 통근 경로
@@ -232,7 +246,10 @@ def _kakao_stops(home: tuple[float, float], work: tuple[float, float], kakao):
 
     카카오는 구간(step)별로 `stops[].name`과 `path.points`(폴리라인, [lon, lat])를 준다.
     정류장 자체에는 좌표가 없으므로 **그 구간 폴리라인의 끝점**을 하차 지점 좌표로 쓴다.
-    도보 구간은 명세에 없는 mode라 건너뛴다(시간에는 이미 포함돼 있다).
+
+    `stops`는 명세대로 환승 지점만 담고(도보 구간 제외), `path`에는 **도보까지 포함한
+    모든 구간의 실제 선로 좌표**를 수단·노선과 함께 담는다. 정류장을 직선으로 이으면
+    지하철이 강을 가로지르는 것처럼 그려지는데, 폴리라인을 쓰면 실제 노선 모양이 나온다.
     """
     raw = kakao.raw_route(home, work)
     if not raw:
@@ -244,12 +261,16 @@ def _kakao_stops(home: tuple[float, float], work: tuple[float, float], kakao):
         sp = step.get("properties", {})
         kind = sp.get("type")
         points = (step.get("path") or {}).get("points") or []
-        if points:
-            paths.append([[p[1], p[0]] for p in points])      # [lon,lat] → [lat,lng]
-        if kind not in ("SUBWAY", "BUS") or not points:
-            continue
         names = sp.get("stops") or []
         vehicles = sp.get("vehicles") or []
+        if points:
+            paths.append({
+                "mode": {"SUBWAY": "subway", "BUS": "bus"}.get(kind, "walk"),
+                "line": vehicles[0].get("name") if vehicles else None,
+                "points": [[p[1], p[0]] for p in points],     # [lon,lat] → [lat,lng]
+            })
+        if kind not in ("SUBWAY", "BUS") or not points:
+            continue
         last = points[-1]
         stops.append({
             "name": names[-1].get("name") if names else sp.get("guidance", ""),
@@ -264,13 +285,13 @@ def _kakao_stops(home: tuple[float, float], work: tuple[float, float], kakao):
             "transfers": props.get("transfers"), "fare": (props.get("fare") or {}).get("value")}
 
 
-def _engine_stops(home: tuple[float, float], dist, parent, router_, listing_id: str):
+def _engine_stops(home: tuple[float, float], field, router_):
     """자체 엔진 경로 → 명세의 stops[] 형태. 카카오가 실패했을 때의 폴백.
 
     지하철만 다루므로 mode는 항상 subway다. 좌표는 우리 역 목록에서 이름으로 찾는다.
     """
     from .main import LISTING_ACCESS_WALK_M
-    c = router_.commute(home[0], home[1], dist, parent, radius_m=LISTING_ACCESS_WALK_M)
+    c = router_.commute(home[0], home[1], field, radius_m=LISTING_ACCESS_WALK_M)
     if not c.reachable:
         return None
     by_name = {s.stop_name: s for s in router_.g.stops}
@@ -298,7 +319,7 @@ def listing_commute(listing_id: int,
     화면 진입 시 매물 하나에만 호출되므로 카카오를 1순위로 쓴다(사람당 1콜).
     버스 구간까지 나오고 쿼터 부담도 적다. 실패하면 자체 엔진(지하철 전용)으로 폴백한다.
     """
-    from .main import state
+    from .main import WORK_ACCESS_WALK_M, state
 
     listing = next((l for l in state["listings"].all() if _listing_no(l) == listing_id), None)
     if listing is None:
@@ -312,10 +333,10 @@ def listing_commute(listing_id: int,
         got = _kakao_stops(home, work, kakao) if kakao.enabled else None
         if got is None:
             try:
-                dist, parent = router_.times_to(*work)
+                field = router_.times_to(*work, radius_m=WORK_ACCESS_WALK_M)
             except ValueError:
-                raise HTTPException(422, f"{label} 직장 반경에 역이 없습니다.")
-            got = _engine_stops(home, dist, parent, router_, listing.id)
+                raise HTTPException(422, f"{label} 직장 주변에 지하철역이 없어요.")
+            got = _engine_stops(home, field, router_)
         if got is None:
             raise HTTPException(422, f"{label} 경로를 찾지 못했습니다.")
         out[label] = got

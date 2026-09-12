@@ -31,8 +31,8 @@ def main() -> int:
     print("-" * 72)
     for label, home, work in SAMPLES:
         got = kakao.travel_time(home, work, s_name="집", e_name="직장")
-        dist, _ = router.times_to(*work)
-        ours = router.commute(*home, dist)
+        field = router.times_to(*work)
+        ours = router.commute(*home, field, explain=False)
         if got is None:
             print(f"{label:<18}{'실패':>8}{ours.minutes:>10}{'':>8}   "
                   f"(응답 없음 — 키·쿼터·좌표 확인)")

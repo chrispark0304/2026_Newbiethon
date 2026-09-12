@@ -23,6 +23,8 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import date
+
+from transit.config import MAX_TRANSFERS
 from pathlib import Path
 
 log = logging.getLogger("gachisaljip.kakao")
@@ -39,6 +41,20 @@ COORD_PRECISION = 4
 #: 재시도하지 않을 응답. 좌표가 문제라 다시 불러도 같은 결과다.
 TERMINAL_STATUS = {"STARTNODES_NULL", "ENDNODES_NULL", "EQUAL_POINTS",
                    "INVALID_REQUEST", "NO_RESULTS"}
+
+
+def _pick_route(routes: list) -> dict | None:
+    """환승 MAX_TRANSFERS회 이하 중 가장 빠른 경로.
+
+    조건을 만족하는 게 없으면 환승이 가장 적은 것을 쓴다. 자체 엔진도 같은 상한을
+    걸어 두었으므로, 두 출처가 서로 다른 기준으로 경로를 고르는 일이 없게 맞춘다.
+    """
+    if not routes:
+        return None
+    t = lambda r: r.get("properties", {}).get("totalTime", 1 << 30)
+    x = lambda r: r.get("properties", {}).get("transfers", 99)
+    ok = [r for r in routes if x(r) <= MAX_TRANSFERS]
+    return min(ok, key=t) if ok else min(routes, key=lambda r: (x(r), t(r)))
 
 
 @dataclass
@@ -167,11 +183,9 @@ class KakaoTransit:
                 log.warning("카카오 예상 못한 status: %s", status)
             return None
 
-        routes = payload.get("routes") or []
-        if not routes:
+        best = _pick_route(payload.get("routes") or [])
+        if not best:
             return None
-        # 가장 빠른 경로를 고른다.
-        best = min(routes, key=lambda r: r.get("properties", {}).get("totalTime", 1 << 30))
         prop = best.get("properties", {})
         fare = prop.get("fare") or {}
         return TransitResult(
@@ -201,10 +215,7 @@ class KakaoTransit:
             self._save_cache()
         if not payload or payload.get("status") != "OK":
             return None
-        routes = payload.get("routes") or []
-        if not routes:
-            return None
-        return min(routes, key=lambda r: r.get("properties", {}).get("totalTime", 1 << 30))
+        return _pick_route(payload.get("routes") or [])
 
     def stats(self) -> dict:
         self._roll_day()

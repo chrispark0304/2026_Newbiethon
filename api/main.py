@@ -38,6 +38,11 @@ MAX_STATION_WALK_M = 1200
 #: 조용히 버리는 것보다 낫다. 1,600m에서 unreachable은 8건.
 LISTING_ACCESS_WALK_M = 1600
 
+#: 직장 → 하차역 최대 도보 반경(m). 매물과 같은 값을 쓴다.
+#: 엔진 기본값(900m)으로는 판교테크노밸리(최근접역 1,234m)처럼 역에서 떨어진
+#: 오피스 밀집지가 통째로 막힌다. 실제로는 그런 곳도 다들 걸어서 출퇴근한다.
+WORK_ACCESS_WALK_M = 1600
+
 #: 통근시간 출처.
 #:   engine  자체 지하철 그래프만. 외부 호출 0회
 #:   kakao   전부 카카오맵 대중교통 경로. 정확하지만 쿼터(1,000/일)를 빨리 먹는다
@@ -140,11 +145,12 @@ def search(req: SearchRequest):
     fields = []
     for person in req.people:
         try:
-            dist, parent = router.times_to(person.work.lat, person.work.lon)
+            field = router.times_to(person.work.lat, person.work.lon,
+                                    radius_m=WORK_ACCESS_WALK_M)
         except ValueError:
             raise HTTPException(
                 422, f"'{person.name}'의 직장 반경에 역이 없습니다. 좌표를 확인해 주세요.")
-        fields.append((dist, parent))
+        fields.append(field)
 
     stats = {"total": len(items)}
 
@@ -162,10 +168,9 @@ def search(req: SearchRequest):
     def commutes_for(lat: float, lon: float):
         key = (lat, lon)
         if key not in cache:
-            cache[key] = [router.commute(lat, lon, dist,
-                                         parent if req.include_legs else None,
+            cache[key] = [router.commute(lat, lon, f, explain=req.include_legs,
                                          radius_m=LISTING_ACCESS_WALK_M)
-                          for dist, parent in fields]
+                          for f in fields]
         return cache[key]
 
     scored = []

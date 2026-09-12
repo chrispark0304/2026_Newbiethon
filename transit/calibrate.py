@@ -48,7 +48,7 @@ def main(argv=None):
     from .router import CommuteRouter
     r = CommuteRouter()
     wlat, wlon = (float(v) for v in args.work.split(","))
-    dist, _ = r.times_to(wlat, wlon)
+    field = r.times_to(wlat, wlon)
 
     with open(args.homes, encoding="utf-8", newline="") as fp:
         homes = list(csv.DictReader(fp))[: args.limit]
@@ -57,7 +57,7 @@ def main(argv=None):
     print(f"{'집':<16}{'우리':>6}{'ODsay':>7}{'차이':>7}")
     for h in homes:
         hlat, hlon = float(h["lat"]), float(h["lon"])
-        ours = r.commute(hlat, hlon, dist)
+        ours = r.commute(hlat, hlon, field, explain=False)
         if not ours.reachable:
             continue
         ref = odsay_minutes(hlon, hlat, wlon, wlat, key)
