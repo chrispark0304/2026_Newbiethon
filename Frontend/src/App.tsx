@@ -1,5 +1,4 @@
 import { useState, useRef, useEffect, Fragment } from 'react'
-import { createPortal } from 'react-dom'
 import { fetchCommute, searchListings } from './api'
 import type { ApiStop, Commute, Listing } from './api'
 
@@ -150,7 +149,12 @@ function WorkSearchInput({ value, onChange, onPick }: { value: string; onChange:
 // Fills its parent (must be `relative`) with a live Kakao map, auto-fit to `fitPoints`.
 // Children are provided via render-prop once the map instance exists, so overlays/
 // polylines never try to attach before there's a map to attach to.
-function KakaoMap({ fitPoints, level = 6, children }: { fitPoints: LatLng[]; level?: number; children: (map: any) => React.ReactNode }) {
+//
+// The tile layer, an optional dimming wash, and our own marker layer are three
+// stacked siblings (not nested) — that's what lets `dim` fade only the map tiles
+// while `KakaoOverlay` markers (rendered in the top layer, positioned by hand via
+// the map's projection) stay fully crisp on top of the wash.
+function KakaoMap({ fitPoints, level = 6, dim, children }: { fitPoints: LatLng[]; level?: number; dim?: boolean; children: (map: any) => React.ReactNode }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [map, setMap] = useState<any>(null)
   const ready = useKakaoReady()
@@ -177,31 +181,48 @@ function KakaoMap({ fitPoints, level = 6, children }: { fitPoints: LatLng[]; lev
   }, [map, JSON.stringify(fitPoints)])
 
   return (
-    <div ref={containerRef} className="absolute inset-0 w-full h-full bg-[#f5f4f0]">
-      {map && children(map)}
+    <div className="absolute inset-0 w-full h-full overflow-hidden">
+      <div ref={containerRef} className="absolute inset-0 w-full h-full bg-[#f5f4f0]" />
+      {dim && <div className="absolute inset-0 pointer-events-none" style={{ background: 'rgba(255,255,255,0.78)' }} />}
+      <div className="absolute inset-0 pointer-events-none">{map && children(map)}</div>
     </div>
   )
 }
 
-// A React-rendered marker pinned to a lat/lng via kakao.maps.CustomOverlay.
-// We hand Kakao a plain div and portal our JSX into it, so normal onClick/hover still work.
+// A marker pinned to a lat/lng, positioned by hand via the map's projection instead of
+// kakao.maps.CustomOverlay. CustomOverlay would physically move our content into Kakao's
+// own tile-layer DOM, which is exactly the layer `dim` fades — rendering it ourselves in
+// the marker layer above the wash is what keeps markers crisp while the map fades.
 function KakaoOverlay({ map, lat, lng, zIndex, children }: { map: any; lat: number; lng: number; zIndex?: number; children: React.ReactNode }) {
-  const elRef = useRef<HTMLDivElement | null>(null)
-  if (!elRef.current) elRef.current = document.createElement('div')
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
 
+  // Kakao's center_changed/zoom_changed only fire once a pan or zoom *settles* — during
+  // the animated transition itself they stay silent, so a marker driven by those events
+  // alone visibly freezes mid-zoom/mid-drag and then jumps at the end. Tracking every
+  // frame instead keeps it glued to its geo point throughout the whole animation.
   useEffect(() => {
     const kakao = (window as any).kakao
-    const overlay = new kakao.maps.CustomOverlay({
-      position: new kakao.maps.LatLng(lat, lng),
-      content: elRef.current,
-      xAnchor: 0.5, yAnchor: 0.5,
-      zIndex,
-    })
-    overlay.setMap(map)
-    return () => overlay.setMap(null)
-  }, [map, lat, lng, zIndex])
+    const latlng = new kakao.maps.LatLng(lat, lng)
+    let raf: number
+    let last: { x: number; y: number } | null = null
+    const tick = () => {
+      const p = map.getProjection().containerPointFromCoords(latlng)
+      if (!last || last.x !== p.x || last.y !== p.y) {
+        last = { x: p.x, y: p.y }
+        setPos(last)
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [map, lat, lng])
 
-  return createPortal(children, elRef.current)
+  if (!pos) return null
+  return (
+    <div className="absolute pointer-events-auto" style={{ left: pos.x, top: pos.y, transform: 'translate(-50%, -50%)', zIndex }}>
+      {children}
+    </div>
+  )
 }
 
 function KakaoPolyline({ map, path, color, width = 4, opacity = 0.9, dashed = false }: {
@@ -220,6 +241,56 @@ function KakaoPolyline({ map, path, color, width = 4, opacity = 0.9, dashed = fa
     return () => line.setMap(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [map, JSON.stringify(path), color, width, opacity, dashed])
+  return null
+}
+
+// Reports the map's current zoom level to a parent, so it can switch between
+// individual markers and clustered circles as the user zooms in/out.
+function KakaoZoomWatcher({ map, onChange }: { map: any; onChange: (level: number) => void }) {
+  useEffect(() => {
+    const kakao = (window as any).kakao
+    const handler = () => onChange(map.getLevel())
+    handler()
+    kakao.maps.event.addListener(map, 'zoom_changed', handler)
+    return () => kakao.maps.event.removeListener(map, 'zoom_changed', handler)
+  }, [map])
+  return null
+}
+
+// Reports whether the map is currently moving — zooming *or* panning. Kakao's
+// zoom_changed/center_changed events only fire once a transition settles, so instead
+// we watch level+center every frame: any change means "moving", and we hold that for a
+// short settle window afterward (covers Kakao's own zoom transition and any pan
+// momentum) before declaring it idle again. Used to hide every marker while the map is
+// in motion and pop them all back in together once it stops, instead of each marker
+// trailing the map at its own pace.
+function MapMotionWatcher({ map, onChange }: { map: any; onChange: (moving: boolean) => void }) {
+  useEffect(() => {
+    let raf: number
+    let lastLevel = map.getLevel()
+    let lastLat = map.getCenter().getLat()
+    let lastLng = map.getCenter().getLng()
+    let idleFrames = 0
+    let moving = false
+    const SETTLE_FRAMES = 22 // ~350ms at 60fps
+    const tick = () => {
+      const level = map.getLevel()
+      const center = map.getCenter()
+      const lat = center.getLat(), lng = center.getLng()
+      const changed = level !== lastLevel || lat !== lastLat || lng !== lastLng
+      lastLevel = level; lastLat = lat; lastLng = lng
+      if (changed) {
+        idleFrames = 0
+        if (!moving) { moving = true; onChange(true) }
+      } else if (moving) {
+        idleFrames++
+        if (idleFrames > SETTLE_FRAMES) { moving = false; onChange(false) }
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [map])
   return null
 }
 
@@ -484,6 +555,57 @@ function InputScreen({ cond, setCond, onSubmit, onPickWork }: {
   )
 }
 
+// 지도를 줄였을 때(레벨 숫자가 커질 때) 낱개 가격 대신 구 단위로 묶어서 평균가를 보여준다.
+// 숫자가 클수록 더 많이 축소해야 묶인다.
+const CLUSTER_LEVEL = 7
+
+type Cluster = { gu: string; members: Listing[]; lat: number; lng: number; avgPrice: number }
+
+const groupAvg = (gu: string, members: Listing[]): Cluster => ({
+  gu,
+  members,
+  lat: members.reduce((s, m) => s + m.lat, 0) / members.length,
+  lng: members.reduce((s, m) => s + m.lng, 0) / members.length,
+  avgPrice: Math.round(members.reduce((s, m) => s + (m.leaseType === '전세' ? m.monthlyEquivalent : m.price), 0) / members.length),
+})
+
+// 구 단위로 묶되, 매물이 1건뿐인 구는 따로 두지 않고 가장 가까운(중심점 기준) 다른
+// 그룹에 흡수시킨다 — 화면에 외딴 낱개 원이 하나만 떠 있는 걸 막는다.
+function clusterByGu(listings: Listing[]): Cluster[] {
+  const byGu = new Map<string, Listing[]>()
+  for (const p of listings) {
+    const gu = p.neighborhood.split(' ')[0] || p.neighborhood
+    if (!byGu.has(gu)) byGu.set(gu, [])
+    byGu.get(gu)!.push(p)
+  }
+  const groups = [...byGu.entries()].map(([gu, members]) => groupAvg(gu, members))
+  const multi = groups.filter(g => g.members.length > 1)
+  const singles = groups.filter(g => g.members.length === 1)
+  if (multi.length === 0) return groups // 전부 낱개뿐이면 합칠 대상이 없다
+
+  const dist2 = (a: Cluster, b: Cluster) => (a.lat - b.lat) ** 2 + (a.lng - b.lng) ** 2
+  const merged = new Map(multi.map(g => [g.gu, [...g.members]]))
+  for (const single of singles) {
+    const nearest = multi.reduce((best, g) => (dist2(single, g) < dist2(single, best) ? g : best), multi[0])
+    merged.get(nearest.gu)!.push(single.members[0])
+  }
+  return [...merged.entries()].map(([gu, members]) => groupAvg(gu, members))
+}
+
+function PriceBubble({ p, map, hovered, onSelect, setHovered }: {
+  p: Listing; map: any; hovered: number | null; onSelect: (id: number) => void; setHovered: (id: number | null) => void
+}) {
+  return (
+    <KakaoOverlay map={map} lat={p.lat} lng={p.lng} zIndex={hovered === p.id ? 31 : 30}>
+      <button onClick={() => onSelect(p.id)} onMouseEnter={() => setHovered(p.id)} onMouseLeave={() => setHovered(null)}>
+        <div className={`px-2.5 py-1 text-xs font-600 rounded-full border shadow-sm transition-all whitespace-nowrap ${hovered === p.id ? 'bg-[#2d2a24] text-white border-[#2d2a24] shadow-md' : 'bg-white text-[#2d2a24] border-[#ddd] hover:border-[#999]'}`}>
+          {shortPrice(p)}
+        </div>
+      </button>
+    </KakaoOverlay>
+  )
+}
+
 // Screen 2
 function MapScreen({ cond, setCond, onSelect, onHome, workCoords, onPickWork, listings, loading, error }: {
   cond: Conditions; setCond: (c: Conditions) => void; onSelect: (id: number) => void; onHome: () => void; workCoords: { p1: LatLng; p2: LatLng }
@@ -492,8 +614,12 @@ function MapScreen({ cond, setCond, onSelect, onHome, workCoords, onPickWork, li
 }) {
   const [hovered, setHovered] = useState<number | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [zoomLevel, setZoomLevel] = useState(CLUSTER_LEVEL)
+  const [moving, setMoving] = useState(false)
   // 매물이 아직 없으면 직장 두 곳만으로 지도를 맞춘다.
   const fitPoints = [workCoords.p1, workCoords.p2, ...listings.map(p => ({ lat: p.lat, lng: p.lng }))]
+  const clusters = clusterByGu(listings)
+  const clustered = zoomLevel >= CLUSTER_LEVEL
 
   return (
     <div className="h-screen flex flex-col bg-[#faf9f7]">
@@ -545,24 +671,43 @@ function MapScreen({ cond, setCond, onSelect, onHome, workCoords, onPickWork, li
         </aside>
 
         <div className="flex-1 relative">
-          <KakaoMap fitPoints={fitPoints}>
+          <KakaoMap fitPoints={fitPoints} dim>
             {map => (
               <>
-                <WorkMarker map={map} lat={workCoords.p1.lat} lng={workCoords.p1.lng} color="#16a34a" label={cond.p1Work} />
-                <WorkMarker map={map} lat={workCoords.p2.lat} lng={workCoords.p2.lng} color="#7c3aed" label={cond.p2Work} />
-                {listings.map(p => (
-                  <KakaoOverlay key={p.id} map={map} lat={p.lat} lng={p.lng} zIndex={hovered === p.id ? 31 : 30}>
-                    <button
-                      onClick={() => onSelect(p.id)}
-                      onMouseEnter={() => setHovered(p.id)}
-                      onMouseLeave={() => setHovered(null)}
-                    >
-                      <div className={`px-2.5 py-1 text-xs font-600 rounded-full border shadow-sm transition-all whitespace-nowrap ${hovered === p.id ? 'bg-[#2d2a24] text-white border-[#2d2a24] shadow-md' : 'bg-white text-[#2d2a24] border-[#ddd] hover:border-[#999]'}`}>
-                        {shortPrice(p)}
-                      </div>
-                    </button>
-                  </KakaoOverlay>
-                ))}
+                <KakaoZoomWatcher map={map} onChange={setZoomLevel} />
+                <MapMotionWatcher map={map} onChange={setMoving} />
+                {!moving && <WorkMarker map={map} lat={workCoords.p1.lat} lng={workCoords.p1.lng} color="#16a34a" label={cond.p1Work} />}
+                {!moving && <WorkMarker map={map} lat={workCoords.p2.lat} lng={workCoords.p2.lng} color="#7c3aed" label={cond.p2Work} />}
+                {!moving && (clustered
+                  ? clusters.map(c => c.members.length > 1 ? (
+                      <KakaoOverlay key={c.gu} map={map} lat={c.lat} lng={c.lng} zIndex={30}>
+                        <button
+                          onClick={() => {
+                            const kakao = (window as any).kakao
+                            const bounds = new kakao.maps.LatLngBounds()
+                            c.members.forEach(m => bounds.extend(new kakao.maps.LatLng(m.lat, m.lng)))
+                            map.setBounds(bounds, 48)
+                            // 클러스터 안 매물끼리 너무 가까우면 setBounds가 과하게 확대해버린다.
+                            // 최소한 동네 정도는 보이는 수준으로 붙잡아 준다.
+                            if (map.getLevel() < CLUSTER_LEVEL - 3) map.setLevel(CLUSTER_LEVEL - 3)
+                          }}
+                          className="flex flex-col items-center justify-center rounded-full shadow-md text-[#555] hover:brightness-95 transition-all"
+                          style={{
+                            width: 64 + Math.min(c.members.length, 12) * 3,
+                            height: 64 + Math.min(c.members.length, 12) * 3,
+                            background: '#e5e5e5',
+                          }}
+                        >
+                          <div className="text-sm font-700 leading-tight">{c.avgPrice}만</div>
+                          <div className="text-[10px] text-[#888] leading-tight mt-0.5">{c.gu} · {c.members.length}건</div>
+                        </button>
+                      </KakaoOverlay>
+                    ) : (
+                      <PriceBubble key={c.members[0].id} p={c.members[0]} map={map} hovered={hovered} onSelect={onSelect} setHovered={setHovered} />
+                    ))
+                  : listings.map(p => (
+                      <PriceBubble key={p.id} p={p} map={map} hovered={hovered} onSelect={onSelect} setHovered={setHovered} />
+                    )))}
               </>
             )}
           </KakaoMap>
