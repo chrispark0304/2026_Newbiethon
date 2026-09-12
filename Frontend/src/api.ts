@@ -22,6 +22,9 @@ export type Listing = {
   buildingName: string
   nearestStation: { name: string; lines: string[]; walkMin: number } | null
   commuteMinutes: [number, number]
+  // 사람별 환승 횟수. "환승 적은 순" 정렬용 — 목록 정렬 버튼에서 쓴다.
+  // 백엔드를 재시작하기 전에는 없을 수 있어서 optional로 둔다.
+  transfers?: [number, number]
   jointScore: number
 }
 
@@ -124,11 +127,16 @@ export function geocode(query: string): Promise<Geo> {
 export type PersonQuery = {
   workLat: number
   workLng: number
+  depositMin: number
+  depositMax: number
   priceMin: number
   priceMax: number
   areaMin: number
   areaMax: number
 }
+
+/** 목록 정렬 기준. 백엔드에서 자르기 전에 적용되므로 재요청이 필요하다. */
+export type SortBy = 'recommended' | 'balanced' | 'price' | 'commute' | 'area'
 
 export type SearchResult = {
   listings: Listing[]
@@ -141,12 +149,13 @@ export async function searchListings(
   p2: PersonQuery,
   /** 오류 문구에 쓸 직장 표시명. "'판교' 주변에 지하철역이 없어요" 처럼 쓰인다. */
   names?: { p1Name: string; p2Name: string },
+  sortBy: SortBy = 'recommended',
   limit = 50,
 ): Promise<SearchResult> {
   const { data, headers } = await jsonWithHeaders<Listing[]>(`${BASE}/api/listings/search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ p1, p2, limit, ...names }),
+    body: JSON.stringify({ p1, p2, limit, sortBy, ...names }),
   })
   const total = Number(headers.get('X-Total-Matched'))
   return { listings: data, total: Number.isFinite(total) && total > 0 ? total : data.length }
