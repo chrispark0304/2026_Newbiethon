@@ -141,7 +141,8 @@ export async function searchListings(
   p2: PersonQuery,
   /** 오류 문구에 쓸 직장 표시명. "'판교' 주변에 지하철역이 없어요" 처럼 쓰인다. */
   names?: { p1Name: string; p2Name: string },
-  limit = 100,
+  // 구 단위 클러스터링이 들어가면서 마커를 더 받아도 화면이 버틴다(origin/main).
+  limit = 150,
 ): Promise<SearchResult> {
   const { data, headers } = await jsonWithHeaders<Listing[]>(`${BASE}/api/listings/search`, {
     method: 'POST',
