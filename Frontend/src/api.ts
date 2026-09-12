@@ -57,6 +57,22 @@ export type Commute = { p1: CommuteLeg; p2: CommuteLeg }
 /** 백엔드 오류에 붙는 코드. 화면에서 분기할 일이 있으면 이걸 본다. */
 export type ApiErrorCode = 'AREA_RANGE_DISJOINT' | 'PRICE_RANGE_INVALID' | 'WORK_NO_STATION'
 
+/**
+ * fetch가 던지는 실패는 원인을 구분해 주지 않는다 — 서버가 죽은 것과 CORS로 막힌 것이
+ * 브라우저에서 똑같이 TypeError로 온다. 그래서 상황에 맞는 쪽을 먼저 의심하도록 안내한다.
+ * 배포된 백엔드를 부르는데 안 닿으면 서버가 죽었을 가능성보다 CORS 미등록이 훨씬 흔하다.
+ */
+function unreachableMessage(): string {
+  const local = /^https?:\/\/(localhost|127\.0\.0\.1)(:|$)/.test(BASE)
+  if (local) {
+    return '백엔드에 연결할 수 없어요. 서버가 실행 중인지 확인해 주세요.'
+  }
+  return (
+    `${BASE} 에 연결할 수 없어요. ` +
+    '백엔드의 CORS 허용 목록에 이 사이트 주소가 들어 있는지 확인해 주세요.'
+  )
+}
+
 export class ApiError extends Error {
   code?: ApiErrorCode
   status: number
@@ -79,8 +95,7 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
   try {
     res = await fetch(url, init)
   } catch {
-    // 네트워크 자체가 안 닿는 경우 — 보통 백엔드가 안 떠 있다.
-    throw new ApiError('서버에 연결할 수 없어요. 백엔드가 실행 중인지 확인해 주세요.', 0)
+    throw new ApiError(unreachableMessage(), 0)
   }
 
   if (!res.ok) {
@@ -103,7 +118,7 @@ async function jsonWithHeaders<T>(url: string, init?: RequestInit): Promise<{ da
   try {
     res = await fetch(url, init)
   } catch {
-    throw new ApiError('서버에 연결할 수 없어요. 백엔드가 실행 중인지 확인해 주세요.', 0)
+    throw new ApiError(unreachableMessage(), 0)
   }
   if (!res.ok) {
     const body = await res.json().catch(() => null)
