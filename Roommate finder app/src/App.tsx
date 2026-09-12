@@ -8,12 +8,51 @@ const PROPERTIES = [
   { id: 5, price: 58, neighborhood: '마포구 망원동', address: '망원로 33', floor: 4, area: 27, year: 2017, deposit: 500, x: 34, y: 52 },
 ]
 
-const ROUTES = [
-  { p1: [{ x: 38, y: 42 }, { x: 44, y: 50 }, { x: 58, y: 56 }], p2: [{ x: 38, y: 42 }, { x: 30, y: 36 }, { x: 22, y: 30 }], p1_stations: ['합정', '당산', '여의도', '강남'], p2_stations: ['합정', '홍대입구', '신촌'], p1_time: 28, p2_time: 12 },
-  { p1: [{ x: 28, y: 28 }, { x: 38, y: 38 }, { x: 58, y: 56 }], p2: [{ x: 28, y: 28 }, { x: 24, y: 32 }, { x: 22, y: 30 }], p1_stations: ['녹번', '불광', '여의도', '강남'], p2_stations: ['녹번', '연신내', '홍대입구'], p1_time: 35, p2_time: 22 },
-  { p1: [{ x: 22, y: 38 }, { x: 36, y: 48 }, { x: 58, y: 56 }], p2: [{ x: 22, y: 38 }, { x: 22, y: 34 }, { x: 22, y: 30 }], p1_stations: ['홍제', '무악재', '충정로', '강남'], p2_stations: ['홍제', '홍대입구'], p1_time: 32, p2_time: 8 },
-  { p1: [{ x: 50, y: 58 }, { x: 54, y: 57 }, { x: 58, y: 56 }], p2: [{ x: 50, y: 58 }, { x: 36, y: 44 }, { x: 22, y: 30 }], p1_stations: ['효창공원앞', '삼각지', '강남'], p2_stations: ['효창공원앞', '공덕', '홍대입구'], p1_time: 18, p2_time: 20 },
-  { p1: [{ x: 34, y: 52 }, { x: 44, y: 54 }, { x: 58, y: 56 }], p2: [{ x: 34, y: 52 }, { x: 28, y: 40 }, { x: 22, y: 30 }], p1_stations: ['망원', '합정', '당산', '강남'], p2_stations: ['망원', '합정', '홍대입구'], p1_time: 24, p2_time: 10 },
+// Real-world Seoul subway line colors, used so route lines read like an actual transit map
+const LINE_COLORS: Record<string, string> = {
+  '2호선': '#00A84D',
+  '3호선': '#EF7C1C',
+  '4호선': '#00A5DE',
+  '5호선': '#996CAC',
+  '6호선': '#CD7C2F',
+  '9호선': '#BDB092',
+  '경의중앙선': '#77C4A3',
+}
+const BUS_COLOR = '#2563eb'
+
+// One stop along a person's commute. `mode`/`line`/`color` describe the leg *arriving* at this stop
+// (the first stop in a route has none, since there's no leg before it).
+type Stop = { name: string; x: number; y: number; mode?: 'subway' | 'bus'; line?: string; color?: string }
+
+const subwayLeg = (name: string, x: number, y: number, line: string): Stop => ({ name, x, y, mode: 'subway', line, color: LINE_COLORS[line] })
+const busLeg = (name: string, x: number, y: number, line: string): Stop => ({ name, x, y, mode: 'bus', line, color: BUS_COLOR })
+
+const ROUTES: { p1: Stop[]; p2: Stop[]; p1_time: number; p2_time: number }[] = [
+  {
+    p1: [{ name: '합정', x: 38, y: 42 }, subwayLeg('당산', 44, 49, '2호선'), subwayLeg('여의도', 50, 53, '9호선'), busLeg('강남', 58, 56, '740')],
+    p2: [{ name: '합정', x: 38, y: 42 }, subwayLeg('홍대입구', 30, 36, '2호선'), subwayLeg('신촌', 22, 30, '경의중앙선')],
+    p1_time: 28, p2_time: 12,
+  },
+  {
+    p1: [{ name: '녹번', x: 28, y: 28 }, subwayLeg('불광', 38, 38, '6호선'), subwayLeg('여의도', 48, 47, '5호선'), busLeg('강남', 58, 56, '472')],
+    p2: [{ name: '녹번', x: 28, y: 28 }, subwayLeg('연신내', 24, 32, '3호선'), subwayLeg('홍대입구', 22, 30, '6호선')],
+    p1_time: 35, p2_time: 22,
+  },
+  {
+    p1: [{ name: '홍제', x: 22, y: 38 }, subwayLeg('무악재', 30, 43, '3호선'), subwayLeg('충정로', 44, 50, '5호선'), busLeg('강남', 58, 56, '361')],
+    p2: [{ name: '홍제', x: 22, y: 38 }, busLeg('홍대입구', 22, 30, '7737')],
+    p1_time: 32, p2_time: 8,
+  },
+  {
+    p1: [{ name: '효창공원앞', x: 50, y: 58 }, subwayLeg('삼각지', 54, 57, '6호선'), busLeg('강남', 58, 56, '143')],
+    p2: [{ name: '효창공원앞', x: 50, y: 58 }, subwayLeg('공덕', 36, 44, '6호선'), subwayLeg('홍대입구', 22, 30, '2호선')],
+    p1_time: 18, p2_time: 20,
+  },
+  {
+    p1: [{ name: '망원', x: 34, y: 52 }, subwayLeg('합정', 40, 53, '6호선'), subwayLeg('당산', 48, 54, '2호선'), busLeg('강남', 58, 56, '472')],
+    p2: [{ name: '망원', x: 34, y: 52 }, subwayLeg('합정', 28, 40, '6호선'), subwayLeg('홍대입구', 22, 30, '2호선')],
+    p1_time: 24, p2_time: 10,
+  },
 ]
 
 // Shared condition state lifted to App so it persists across screens
@@ -41,10 +80,59 @@ function MapBackground() {
   )
 }
 
-function PolyPath({ points, color }: { points: { x: number; y: number }[]; color: string }) {
-  if (points.length < 2) return null
-  const d = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x}% ${p.y}%`).join(' ')
-  return <path d={d} stroke={color} strokeWidth="3" fill="none" strokeLinecap="round" strokeLinejoin="round" strokeOpacity="0.85" />
+// Renders a commute as real transit lines: each leg is colored/styled by its actual
+// subway line or bus route, with a thin person-colored halo underneath so it's still
+// clear whose commute is whose.
+function TransitRoute({ stops, personColor }: { stops: Stop[]; personColor: string }) {
+  if (stops.length < 2) return null
+  return (
+    <>
+      {stops.slice(1).map((to, i) => {
+        const from = stops[i]
+        const d = `M ${from.x}% ${from.y}% L ${to.x}% ${to.y}%`
+        const isBus = to.mode === 'bus'
+        return (
+          <g key={i}>
+            <path d={d} stroke={personColor} strokeWidth="7" strokeOpacity="0.22" fill="none" strokeLinecap="round" />
+            <path
+              d={d}
+              stroke={to.color}
+              strokeWidth={isBus ? 3 : 4}
+              fill="none"
+              strokeLinecap="round"
+              strokeDasharray={isBus ? '2 5' : undefined}
+            />
+          </g>
+        )
+      })}
+      {stops.map((s, i) => (
+        <circle key={i} cx={`${s.x}%`} cy={`${s.y}%`} r={i === 0 || i === stops.length - 1 ? 5 : 3.5} fill="white" stroke={s.color ?? personColor} strokeWidth="2" />
+      ))}
+    </>
+  )
+}
+
+// Small pill labels (e.g. "2호선", "740") placed at each leg's midpoint, HTML overlay
+// (not SVG) so the text stays crisp and horizontally readable.
+function TransitLegBadges({ stops }: { stops: Stop[] }) {
+  return (
+    <>
+      {stops.slice(1).map((to, i) => {
+        if (!to.line) return null
+        const from = stops[i]
+        const mx = (from.x + to.x) / 2, my = (from.y + to.y) / 2
+        return (
+          <div
+            key={i}
+            className="absolute z-20 text-[9px] font-600 text-white px-1.5 py-0.5 rounded-full shadow-sm whitespace-nowrap"
+            style={{ left: `${mx}%`, top: `${my}%`, transform: 'translate(-50%, -50%)', background: to.color }}
+          >
+            {to.mode === 'bus' ? `🚌 ${to.line}` : to.line}
+          </div>
+        )
+      })}
+    </>
+  )
 }
 
 function WorkMarker({ x, y, color, label }: { x: number; y: number; color: string; label: string }) {
@@ -258,18 +346,18 @@ function InputScreen({ cond, setCond, onSubmit }: { cond: Conditions; setCond: (
 }
 
 // Screen 2
-function MapScreen({ cond, setCond, onSelect }: { cond: Conditions; setCond: (c: Conditions) => void; onSelect: (id: number) => void }) {
+function MapScreen({ cond, setCond, onSelect, onHome }: { cond: Conditions; setCond: (c: Conditions) => void; onSelect: (id: number) => void; onHome: () => void }) {
   const [hovered, setHovered] = useState<number | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
 
   return (
     <div className="h-screen flex flex-col bg-[#faf9f7]">
       <header className="px-5 py-3.5 border-b border-[#ede9e2] bg-white flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
+        <button onClick={onHome} className="flex items-center gap-2.5 hover:opacity-70 transition-opacity">
           <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M10 2L3 8v10h5v-5h4v5h5V8L10 2z" fill="#2d2a24" /></svg>
           <span className="text-sm font-500 text-[#2d2a24]">같이살집</span>
           <span className="text-xs text-[#bbb] ml-1">매물 {PROPERTIES.length}개</span>
-        </div>
+        </button>
         <button
           onClick={() => setDrawerOpen(true)}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-[#ede9e2] text-xs text-[#666] hover:border-[#bbb] transition-colors bg-white"
@@ -311,7 +399,7 @@ function MapScreen({ cond, setCond, onSelect }: { cond: Conditions; setCond: (c:
               onClick={() => onSelect(p.id)}
               onMouseEnter={() => setHovered(p.id)}
               onMouseLeave={() => setHovered(null)}
-              className="absolute z-10"
+              className="absolute z-30"
               style={{ left: `${p.x}%`, top: `${p.y}%`, transform: 'translate(-50%, -50%)' }}
             >
               <div className={`px-2.5 py-1 text-xs font-600 rounded-full border shadow-sm transition-all ${hovered === p.id ? 'bg-[#2d2a24] text-white border-[#2d2a24] shadow-md' : 'bg-white text-[#2d2a24] border-[#ddd] hover:border-[#999]'}`}>
@@ -328,7 +416,7 @@ function MapScreen({ cond, setCond, onSelect }: { cond: Conditions; setCond: (c:
 }
 
 // Screen 3
-function DetailScreen({ propertyId, cond, setCond, onBack }: { propertyId: number; cond: Conditions; setCond: (c: Conditions) => void; onBack: () => void }) {
+function DetailScreen({ propertyId, cond, setCond, onBack, onHome }: { propertyId: number; cond: Conditions; setCond: (c: Conditions) => void; onBack: () => void; onHome: () => void }) {
   const p = PROPERTIES.find(x => x.id === propertyId)!
   const route = ROUTES[propertyId - 1]
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -337,6 +425,9 @@ function DetailScreen({ propertyId, cond, setCond, onBack }: { propertyId: numbe
     <div className="h-screen flex flex-col bg-[#faf9f7]">
       <header className="px-5 py-3.5 border-b border-[#ede9e2] bg-white flex items-center justify-between">
         <div className="flex items-center gap-3">
+          <button onClick={onHome} className="flex items-center hover:opacity-70 transition-opacity" aria-label="처음으로">
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M10 2L3 8v10h5v-5h4v5h5V8L10 2z" fill="#2d2a24" /></svg>
+          </button>
           <button onClick={onBack} className="flex items-center gap-1.5 text-sm text-[#999] hover:text-[#2d2a24] transition-colors">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 2L4 7l5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
             목록
@@ -375,9 +466,9 @@ function DetailScreen({ propertyId, cond, setCond, onBack }: { propertyId: numbe
             <div className="mt-5 pt-5 border-t border-[#ede9e2] space-y-3.5">
               <div className="text-xs text-[#bbb] mb-1">통근 시간</div>
               {[
-                { color: '#16a34a', label: cond.p1Work, stations: route.p1_stations, minutes: route.p1_time },
-                { color: '#7c3aed', label: cond.p2Work, stations: route.p2_stations, minutes: route.p2_time },
-              ].map(({ color, label, stations, minutes }) => (
+                { color: '#16a34a', label: cond.p1Work, stops: route.p1, minutes: route.p1_time },
+                { color: '#7c3aed', label: cond.p2Work, stops: route.p2, minutes: route.p2_time },
+              ].map(({ color, label, stops, minutes }) => (
                 <div key={label} className="flex items-start gap-2.5">
                   <span className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{ background: color }} />
                   <div className="flex-1">
@@ -385,7 +476,14 @@ function DetailScreen({ propertyId, cond, setCond, onBack }: { propertyId: numbe
                       <span className="text-xs font-500 text-[#444]">{label}</span>
                       <span className="text-xs font-600" style={{ color }}>{minutes}분</span>
                     </div>
-                    <div className="text-[10px] text-[#bbb] mt-0.5">{stations.join(' → ')}</div>
+                    <div className="text-[10px] text-[#bbb] mt-0.5">{stops.map(s => s.name).join(' → ')}</div>
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {stops.slice(1).map((s, i) => s.line && (
+                        <span key={i} className="text-[8px] font-600 text-white px-1.5 py-0.5 rounded-full" style={{ background: s.color }}>
+                          {s.mode === 'bus' ? `🚌 ${s.line}` : s.line}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 </div>
               ))}
@@ -396,11 +494,11 @@ function DetailScreen({ propertyId, cond, setCond, onBack }: { propertyId: numbe
         <div className="flex-1 relative">
           <MapBackground />
           <svg className="absolute inset-0 w-full h-full pointer-events-none">
-            <PolyPath points={route.p1} color="#16a34a" />
-            <PolyPath points={route.p2} color="#7c3aed" />
-            {route.p1.map((pt, i) => <circle key={i} cx={`${pt.x}%`} cy={`${pt.y}%`} r="4" fill="#16a34a" fillOpacity="0.8" />)}
-            {route.p2.map((pt, i) => <circle key={i} cx={`${pt.x}%`} cy={`${pt.y}%`} r="4" fill="#7c3aed" fillOpacity="0.8" />)}
+            <TransitRoute stops={route.p1} personColor="#16a34a" />
+            <TransitRoute stops={route.p2} personColor="#7c3aed" />
           </svg>
+          <TransitLegBadges stops={route.p1} />
+          <TransitLegBadges stops={route.p2} />
           <div className="absolute z-20" style={{ left: `${p.x}%`, top: `${p.y}%`, transform: 'translate(-50%, -50%)' }}>
             <div className="w-9 h-9 rounded-full bg-[#2d2a24] flex items-center justify-center shadow-lg">
               <svg width="16" height="16" viewBox="0 0 20 20" fill="none"><path d="M10 2L3 8v10h5v-5h4v5h5V8L10 2z" fill="white" /></svg>
@@ -408,13 +506,21 @@ function DetailScreen({ propertyId, cond, setCond, onBack }: { propertyId: numbe
           </div>
           <WorkMarker x={58} y={56} color="#16a34a" label={cond.p1Work} />
           <WorkMarker x={22} y={30} color="#7c3aed" label={cond.p2Work} />
-          <div className="absolute bottom-4 right-4 bg-white/90 backdrop-blur-sm border border-[#ede9e2] rounded-xl px-3 py-2.5 text-xs space-y-1.5 shadow-sm">
+          <div className="absolute bottom-4 right-4 bg-white/90 backdrop-blur-sm border border-[#ede9e2] rounded-xl px-3 py-2.5 text-xs space-y-1.5 shadow-sm max-w-[160px]">
             {[['#16a34a', '사람 1 경로'], ['#7c3aed', '사람 2 경로']].map(([color, label]) => (
               <div key={label} className="flex items-center gap-2">
-                <div className="w-5 h-0.5 rounded-full" style={{ background: color }} />
+                <div className="w-5 h-0.5 rounded-full" style={{ background: color, opacity: 0.4 }} />
                 <span className="text-[#666]">{label}</span>
               </div>
             ))}
+            <div className="border-t border-[#ede9e2] pt-1.5 flex items-center gap-2">
+              <svg width="20" height="4" className="flex-shrink-0"><line x1="0" y1="2" x2="20" y2="2" stroke="#999" strokeWidth="3" strokeLinecap="round" /></svg>
+              <span className="text-[#666]">지하철</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <svg width="20" height="4" className="flex-shrink-0"><line x1="0" y1="2" x2="20" y2="2" stroke="#999" strokeWidth="2.5" strokeDasharray="2 3" strokeLinecap="round" /></svg>
+              <span className="text-[#666]">버스</span>
+            </div>
           </div>
         </div>
       </div>
@@ -434,8 +540,9 @@ export default function App() {
   })
 
   const handleSelect = (id: number) => { setSelected(id); setScreen(3) }
+  const goHome = () => setScreen(1)
 
   if (screen === 1) return <InputScreen cond={cond} setCond={setCond} onSubmit={() => setScreen(2)} />
-  if (screen === 2) return <MapScreen cond={cond} setCond={setCond} onSelect={handleSelect} />
-  return <DetailScreen propertyId={selected} cond={cond} setCond={setCond} onBack={() => setScreen(2)} />
+  if (screen === 2) return <MapScreen cond={cond} setCond={setCond} onSelect={handleSelect} onHome={goHome} />
+  return <DetailScreen propertyId={selected} cond={cond} setCond={setCond} onBack={() => setScreen(2)} onHome={goHome} />
 }
