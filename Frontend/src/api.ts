@@ -67,7 +67,7 @@ export type PersonQuery = {
   areaMax: number
 }
 
-export function searchListings(p1: PersonQuery, p2: PersonQuery, limit = 40): Promise<Listing[]> {
+export function searchListings(p1: PersonQuery, p2: PersonQuery, limit = 150): Promise<Listing[]> {
   return json(`${BASE}/api/listings/search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
