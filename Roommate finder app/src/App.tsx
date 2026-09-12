@@ -1,11 +1,14 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect, Fragment } from 'react'
+import { createPortal } from 'react-dom'
+
+type LatLng = { lat: number; lng: number }
 
 const PROPERTIES = [
-  { id: 1, price: 51, neighborhood: '마포구 합정동', address: '합정로 45', floor: 3, area: 24, year: 2018, deposit: 500, x: 38, y: 42 },
-  { id: 2, price: 63, neighborhood: '은평구 녹번동', address: '녹번로 12', floor: 5, area: 30, year: 2021, deposit: 1000, x: 28, y: 28 },
-  { id: 3, price: 45, neighborhood: '서대문구 홍제동', address: '홍제천로 88', floor: 2, area: 20, year: 2015, deposit: 300, x: 22, y: 38 },
-  { id: 4, price: 72, neighborhood: '용산구 효창동', address: '효창원로 6', floor: 7, area: 34, year: 2020, deposit: 1000, x: 50, y: 58 },
-  { id: 5, price: 58, neighborhood: '마포구 망원동', address: '망원로 33', floor: 4, area: 27, year: 2017, deposit: 500, x: 34, y: 52 },
+  { id: 1, price: 51, neighborhood: '마포구 합정동', address: '합정로 45', floor: 3, area: 24, year: 2018, deposit: 500, lat: 37.5460637, lng: 126.9155015 },
+  { id: 2, price: 63, neighborhood: '은평구 녹번동', address: '녹번로 12', floor: 5, area: 30, year: 2021, deposit: 1000, lat: 37.6020381, lng: 126.9212474 },
+  { id: 3, price: 45, neighborhood: '서대문구 홍제동', address: '홍제천로 88', floor: 2, area: 20, year: 2015, deposit: 300, lat: 37.5793417, lng: 126.9515846 },
+  { id: 4, price: 72, neighborhood: '용산구 효창동', address: '효창원로 6', floor: 7, area: 34, year: 2020, deposit: 1000, lat: 37.540473, lng: 126.9612231 },
+  { id: 5, price: 58, neighborhood: '마포구 망원동', address: '망원로 33', floor: 4, area: 27, year: 2017, deposit: 500, lat: 37.5560241, lng: 126.9009751 },
 ]
 
 // Real-world Seoul subway line colors, used so route lines read like an actual transit map
@@ -22,35 +25,37 @@ const BUS_COLOR = '#2563eb'
 
 // One stop along a person's commute. `mode`/`line`/`color` describe the leg *arriving* at this stop
 // (the first stop in a route has none, since there's no leg before it).
-type Stop = { name: string; x: number; y: number; mode?: 'subway' | 'bus'; line?: string; color?: string }
+type Stop = LatLng & { name: string; mode?: 'subway' | 'bus'; line?: string; color?: string }
 
-const subwayLeg = (name: string, x: number, y: number, line: string): Stop => ({ name, x, y, mode: 'subway', line, color: LINE_COLORS[line] })
-const busLeg = (name: string, x: number, y: number, line: string): Stop => ({ name, x, y, mode: 'bus', line, color: BUS_COLOR })
+const subwayLeg = (name: string, lat: number, lng: number, line: string): Stop => ({ name, lat, lng, mode: 'subway', line, color: LINE_COLORS[line] })
+const busLeg = (name: string, lat: number, lng: number, line: string): Stop => ({ name, lat, lng, mode: 'bus', line, color: BUS_COLOR })
+// First stop of a route = the property's own location, named after its neighborhood.
+const start = (i: number, name: string): Stop => ({ name, lat: PROPERTIES[i].lat, lng: PROPERTIES[i].lng })
 
 const ROUTES: { p1: Stop[]; p2: Stop[]; p1_time: number; p2_time: number }[] = [
   {
-    p1: [{ name: '합정', x: 38, y: 42 }, subwayLeg('당산', 44, 49, '2호선'), subwayLeg('여의도', 50, 53, '9호선'), busLeg('강남', 58, 56, '740')],
-    p2: [{ name: '합정', x: 38, y: 42 }, subwayLeg('홍대입구', 30, 36, '2호선'), subwayLeg('신촌', 22, 30, '경의중앙선')],
+    p1: [start(0, '합정'), subwayLeg('당산', 37.5330680, 126.9010551, '2호선'), subwayLeg('여의도', 37.5216685, 126.9243018, '9호선'), busLeg('강남', 37.4975555, 127.0268078, '740')],
+    p2: [start(0, '합정'), subwayLeg('홍대입구', 37.5567647, 126.9237401, '2호선'), subwayLeg('신촌', 37.5597815, 126.9423581, '경의중앙선')],
     p1_time: 28, p2_time: 12,
   },
   {
-    p1: [{ name: '녹번', x: 28, y: 28 }, subwayLeg('불광', 38, 38, '6호선'), subwayLeg('여의도', 48, 47, '5호선'), busLeg('강남', 58, 56, '472')],
-    p2: [{ name: '녹번', x: 28, y: 28 }, subwayLeg('연신내', 24, 32, '3호선'), subwayLeg('홍대입구', 22, 30, '6호선')],
+    p1: [start(1, '녹번'), subwayLeg('불광', 37.6095657, 126.9309769, '6호선'), subwayLeg('여의도', 37.5216685, 126.9243018, '5호선'), busLeg('강남', 37.4975555, 127.0268078, '472')],
+    p2: [start(1, '녹번'), subwayLeg('연신내', 37.6178017, 126.9219666, '3호선'), subwayLeg('홍대입구', 37.5567647, 126.9237401, '6호선')],
     p1_time: 35, p2_time: 22,
   },
   {
-    p1: [{ name: '홍제', x: 22, y: 38 }, subwayLeg('무악재', 30, 43, '3호선'), subwayLeg('충정로', 44, 50, '5호선'), busLeg('강남', 58, 56, '361')],
-    p2: [{ name: '홍제', x: 22, y: 38 }, busLeg('홍대입구', 22, 30, '7737')],
+    p1: [start(2, '홍제'), subwayLeg('무악재', 37.5827589, 126.9500002, '3호선'), subwayLeg('충정로', 37.5596747, 126.9624667, '5호선'), busLeg('강남', 37.4975555, 127.0268078, '361')],
+    p2: [start(2, '홍제'), busLeg('홍대입구', 37.5567647, 126.9237401, '7737')],
     p1_time: 32, p2_time: 8,
   },
   {
-    p1: [{ name: '효창공원앞', x: 50, y: 58 }, subwayLeg('삼각지', 54, 57, '6호선'), busLeg('강남', 58, 56, '143')],
-    p2: [{ name: '효창공원앞', x: 50, y: 58 }, subwayLeg('공덕', 36, 44, '6호선'), subwayLeg('홍대입구', 22, 30, '2호선')],
+    p1: [start(3, '효창공원앞'), subwayLeg('삼각지', 37.5355067, 126.9741107, '6호선'), busLeg('강남', 37.4975555, 127.0268078, '143')],
+    p2: [start(3, '효창공원앞'), subwayLeg('공덕', 37.5444815, 126.9513602, '6호선'), subwayLeg('홍대입구', 37.5567647, 126.9237401, '2호선')],
     p1_time: 18, p2_time: 20,
   },
   {
-    p1: [{ name: '망원', x: 34, y: 52 }, subwayLeg('합정', 40, 53, '6호선'), subwayLeg('당산', 48, 54, '2호선'), busLeg('강남', 58, 56, '472')],
-    p2: [{ name: '망원', x: 34, y: 52 }, subwayLeg('합정', 28, 40, '6호선'), subwayLeg('홍대입구', 22, 30, '2호선')],
+    p1: [start(4, '망원'), subwayLeg('합정', 37.5510384, 126.9157425, '6호선'), subwayLeg('당산', 37.5330680, 126.9010551, '2호선'), busLeg('강남', 37.4975555, 127.0268078, '472')],
+    p2: [start(4, '망원'), subwayLeg('합정', 37.5510384, 126.9157425, '6호선'), subwayLeg('홍대입구', 37.5567647, 126.9237401, '2호선')],
     p1_time: 24, p2_time: 10,
   },
 ]
@@ -62,102 +67,249 @@ type Conditions = {
   p1Area: number[]; p2Area: number[]
 }
 
-function MapBackground() {
+// ---------- Kakao Maps wiring ----------
+// Kakao's SDK is loaded from index.html with `autoload=false`, so we kick off
+// `kakao.maps.load` ourselves once the script tag has landed on `window.kakao`.
+function useKakaoReady() {
+  const [ready, setReady] = useState(false)
+  useEffect(() => {
+    const w = window as any
+    let cancelled = false
+    const tryLoad = () => {
+      if (w.kakao?.maps) {
+        w.kakao.maps.load(() => { if (!cancelled) setReady(true) })
+        return true
+      }
+      return false
+    }
+    if (!tryLoad()) {
+      const id = setInterval(() => { if (tryLoad()) clearInterval(id) }, 100)
+      return () => { cancelled = true; clearInterval(id) }
+    }
+    return () => { cancelled = true }
+  }, [])
+  return ready
+}
+
+// Given free text like "강남역", resolves it to coordinates via Kakao's keyword place search.
+function geocodeKeyword(keyword: string): Promise<LatLng | null> {
+  return new Promise(resolve => {
+    const kakao = (window as any).kakao
+    if (!keyword?.trim() || !kakao?.maps?.services) return resolve(null)
+    const places = new kakao.maps.services.Places()
+    places.keywordSearch(keyword, (data: any[], status: string) => {
+      if (status === kakao.maps.services.Status.OK && data[0]) {
+        resolve({ lat: parseFloat(data[0].y), lng: parseFloat(data[0].x) })
+      } else {
+        resolve(null)
+      }
+    })
+  })
+}
+
+type PlaceHit = { name: string; address: string; lat: number; lng: number }
+
+// Text input with a live Kakao keyword-search dropdown underneath — type "고려대학교",
+// "스타벅스 역삼점", any place or business name, and pick the exact match instead of
+// hoping the first geocoder guess is right.
+function WorkSearchInput({ value, onChange, onPick }: { value: string; onChange: (text: string) => void; onPick: (text: string, coord: LatLng) => void }) {
+  const [results, setResults] = useState<PlaceHit[]>([])
+  const [open, setOpen] = useState(false)
+  const boxRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const kakao = (window as any).kakao
+    if (!value.trim() || !kakao?.maps?.services) { setResults([]); return }
+    const t = setTimeout(() => {
+      const places = new kakao.maps.services.Places()
+      places.keywordSearch(value, (data: any[], status: string) => {
+        if (status === kakao.maps.services.Status.OK) {
+          setResults(data.slice(0, 6).map(d => ({ name: d.place_name, address: d.road_address_name || d.address_name, lat: parseFloat(d.y), lng: parseFloat(d.x) })))
+        } else {
+          setResults([])
+        }
+      })
+    }, 250)
+    return () => clearTimeout(t)
+  }, [value])
+
+  useEffect(() => {
+    const onDocClick = (e: MouseEvent) => { if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false) }
+    document.addEventListener('mousedown', onDocClick)
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [])
+
   return (
-    <svg className="absolute inset-0 w-full h-full" xmlns="http://www.w3.org/2000/svg">
-      <rect width="100%" height="100%" fill="#f5f4f0" />
-      {[15, 30, 45, 60, 75].map(v => (
-        <g key={v}>
-          <line x1={`${v}%`} y1="0" x2={`${v}%`} y2="100%" stroke="#e6e4de" strokeWidth="1" />
-          <line x1="0" y1={`${v}%`} x2="100%" y2={`${v}%`} stroke="#e6e4de" strokeWidth="1" />
-        </g>
-      ))}
-      <path d="M 0 42% Q 25% 44% 50% 40% T 100% 38%" stroke="#d8d5cc" strokeWidth="2" fill="none" />
-      <path d="M 20% 0 Q 22% 30% 26% 50% T 30% 100%" stroke="#d8d5cc" strokeWidth="2" fill="none" />
-      <path d="M 0 65% Q 35% 60% 60% 58% T 100% 55%" stroke="#d8d5cc" strokeWidth="1.5" fill="none" />
-      <path d="M 45% 0 Q 48% 35% 50% 60% T 55% 100%" stroke="#d8d5cc" strokeWidth="1.5" fill="none" />
-    </svg>
+    <div className="relative" ref={boxRef}>
+      <div className="flex items-center gap-2 border border-[#ede9e2] rounded-xl px-3 py-2.5 bg-[#faf9f7]">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="6" r="3" stroke="#bbb" strokeWidth="1.2" /><path d="M7 12s4-3.5 4-6a4 4 0 1 0-8 0c0 2.5 4 6 4 6z" stroke="#bbb" strokeWidth="1.2" fill="none" /></svg>
+        <input
+          type="text"
+          value={value}
+          onChange={e => { onChange(e.target.value); setOpen(true) }}
+          onFocus={() => setOpen(true)}
+          placeholder="예: 고려대학교, 강남역, 스타벅스 역삼점"
+          className="flex-1 text-sm outline-none bg-transparent text-[#333] placeholder-[#ccc]"
+        />
+      </div>
+      {open && results.length > 0 && (
+        <div className="absolute z-50 left-0 right-0 mt-1.5 bg-white border border-[#ede9e2] rounded-xl shadow-lg max-h-56 overflow-y-auto">
+          {results.map((r, i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={() => { onPick(r.name, { lat: r.lat, lng: r.lng }); setOpen(false) }}
+              className="w-full text-left px-3 py-2 hover:bg-[#f7f5f0] border-b border-[#f0ece6] last:border-0"
+            >
+              <div className="text-sm text-[#2d2a24]">{r.name}</div>
+              <div className="text-xs text-[#aaa] truncate">{r.address}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
-// Renders a commute as real transit lines: each leg is colored/styled by its actual
-// subway line or bus route, with a thin person-colored halo underneath so it's still
-// clear whose commute is whose.
-function TransitRoute({ stops, personColor }: { stops: Stop[]; personColor: string }) {
+// Fills its parent (must be `relative`) with a live Kakao map, auto-fit to `fitPoints`.
+// Children are provided via render-prop once the map instance exists, so overlays/
+// polylines never try to attach before there's a map to attach to.
+function KakaoMap({ fitPoints, level = 6, children }: { fitPoints: LatLng[]; level?: number; children: (map: any) => React.ReactNode }) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [map, setMap] = useState<any>(null)
+  const ready = useKakaoReady()
+
+  useEffect(() => {
+    if (!ready || !containerRef.current || map) return
+    const kakao = (window as any).kakao
+    const center = fitPoints[0] ?? { lat: 37.5665, lng: 126.9780 }
+    setMap(new kakao.maps.Map(containerRef.current, { center: new kakao.maps.LatLng(center.lat, center.lng), level }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready])
+
+  useEffect(() => {
+    if (!map || fitPoints.length === 0) return
+    const kakao = (window as any).kakao
+    if (fitPoints.length === 1) {
+      map.setCenter(new kakao.maps.LatLng(fitPoints[0].lat, fitPoints[0].lng))
+      return
+    }
+    const bounds = new kakao.maps.LatLngBounds()
+    fitPoints.forEach(p => bounds.extend(new kakao.maps.LatLng(p.lat, p.lng)))
+    map.setBounds(bounds, 48)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, JSON.stringify(fitPoints)])
+
+  return (
+    <div ref={containerRef} className="absolute inset-0 w-full h-full bg-[#f5f4f0]">
+      {map && children(map)}
+    </div>
+  )
+}
+
+// A React-rendered marker pinned to a lat/lng via kakao.maps.CustomOverlay.
+// We hand Kakao a plain div and portal our JSX into it, so normal onClick/hover still work.
+function KakaoOverlay({ map, lat, lng, zIndex, children }: { map: any; lat: number; lng: number; zIndex?: number; children: React.ReactNode }) {
+  const elRef = useRef<HTMLDivElement | null>(null)
+  if (!elRef.current) elRef.current = document.createElement('div')
+
+  useEffect(() => {
+    const kakao = (window as any).kakao
+    const overlay = new kakao.maps.CustomOverlay({
+      position: new kakao.maps.LatLng(lat, lng),
+      content: elRef.current,
+      xAnchor: 0.5, yAnchor: 0.5,
+      zIndex,
+    })
+    overlay.setMap(map)
+    return () => overlay.setMap(null)
+  }, [map, lat, lng, zIndex])
+
+  return createPortal(children, elRef.current)
+}
+
+function KakaoPolyline({ map, path, color, width = 4, opacity = 0.9, dashed = false }: {
+  map: any; path: LatLng[]; color: string; width?: number; opacity?: number; dashed?: boolean
+}) {
+  useEffect(() => {
+    const kakao = (window as any).kakao
+    const line = new kakao.maps.Polyline({
+      path: path.map(p => new kakao.maps.LatLng(p.lat, p.lng)),
+      strokeWeight: width,
+      strokeColor: color,
+      strokeOpacity: opacity,
+      strokeStyle: dashed ? 'shortdash' : 'solid',
+    })
+    line.setMap(map)
+    return () => line.setMap(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, JSON.stringify(path), color, width, opacity, dashed])
+  return null
+}
+
+// Renders a commute as real transit lines on the Kakao map: each leg is colored/styled by
+// its actual subway line or bus route, with a thin person-colored halo underneath so it's
+// still clear whose commute is whose. Also drops badges (e.g. "2호선", "🚌 740") at each
+// leg's midpoint and small station dots along the way.
+function TransitRoute({ map, stops, personColor }: { map: any; stops: Stop[]; personColor: string }) {
   if (stops.length < 2) return null
   return (
     <>
       {stops.slice(1).map((to, i) => {
         const from = stops[i]
-        const d = `M ${from.x}% ${from.y}% L ${to.x}% ${to.y}%`
+        const path = [{ lat: from.lat, lng: from.lng }, { lat: to.lat, lng: to.lng }]
         const isBus = to.mode === 'bus'
         return (
-          <g key={i}>
-            <path d={d} stroke={personColor} strokeWidth="7" strokeOpacity="0.22" fill="none" strokeLinecap="round" />
-            <path
-              d={d}
-              stroke={to.color}
-              strokeWidth={isBus ? 3 : 4}
-              fill="none"
-              strokeLinecap="round"
-              strokeDasharray={isBus ? '2 5' : undefined}
-            />
-          </g>
+          <Fragment key={i}>
+            <KakaoPolyline map={map} path={path} color={personColor} width={8} opacity={0.22} />
+            <KakaoPolyline map={map} path={path} color={to.color!} width={isBus ? 3 : 4} dashed={isBus} />
+            {to.line && (
+              <KakaoOverlay map={map} lat={(from.lat + to.lat) / 2} lng={(from.lng + to.lng) / 2} zIndex={30}>
+                <div className="text-[9px] font-600 text-white px-1.5 py-0.5 rounded-full shadow-sm whitespace-nowrap" style={{ background: to.color }}>
+                  {isBus ? `🚌 ${to.line}` : to.line}
+                </div>
+              </KakaoOverlay>
+            )}
+          </Fragment>
         )
       })}
       {stops.map((s, i) => (
-        <circle key={i} cx={`${s.x}%`} cy={`${s.y}%`} r={i === 0 || i === stops.length - 1 ? 5 : 3.5} fill="white" stroke={s.color ?? personColor} strokeWidth="2" />
+        <KakaoOverlay key={i} map={map} lat={s.lat} lng={s.lng} zIndex={15}>
+          <div
+            className="rounded-full bg-white"
+            style={{ width: i === 0 || i === stops.length - 1 ? 10 : 7, height: i === 0 || i === stops.length - 1 ? 10 : 7, border: `2px solid ${s.color ?? personColor}` }}
+          />
+        </KakaoOverlay>
       ))}
     </>
   )
 }
 
-// Small pill labels (e.g. "2호선", "740") placed at each leg's midpoint, HTML overlay
-// (not SVG) so the text stays crisp and horizontally readable.
-function TransitLegBadges({ stops }: { stops: Stop[] }) {
+function WorkMarker({ map, lat, lng, color, label }: { map: any; lat: number; lng: number; color: string; label: string }) {
   return (
-    <>
-      {stops.slice(1).map((to, i) => {
-        if (!to.line) return null
-        const from = stops[i]
-        const mx = (from.x + to.x) / 2, my = (from.y + to.y) / 2
-        return (
-          <div
-            key={i}
-            className="absolute z-20 text-[9px] font-600 text-white px-1.5 py-0.5 rounded-full shadow-sm whitespace-nowrap"
-            style={{ left: `${mx}%`, top: `${my}%`, transform: 'translate(-50%, -50%)', background: to.color }}
-          >
-            {to.mode === 'bus' ? `🚌 ${to.line}` : to.line}
-          </div>
-        )
-      })}
-    </>
-  )
-}
-
-function WorkMarker({ x, y, color, label }: { x: number; y: number; color: string; label: string }) {
-  return (
-    <div className="absolute z-20 flex flex-col items-center gap-1" style={{ left: `${x}%`, top: `${y}%`, transform: 'translate(-50%, -50%)' }}>
-      <div className="w-8 h-8 rounded-full flex items-center justify-center shadow-md" style={{ background: color }}>
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-          {/* tall building */}
-          <rect x="1" y="1" width="7" height="12" rx="0.3" stroke="white" strokeWidth="1.1" />
-          <rect x="2.5" y="2.5" width="1.5" height="1.5" fill="white" />
-          <rect x="5" y="2.5" width="1.5" height="1.5" fill="white" />
-          <rect x="2.5" y="5" width="1.5" height="1.5" fill="white" />
-          <rect x="5" y="5" width="1.5" height="1.5" fill="white" />
-          <rect x="2.5" y="7.5" width="1.5" height="1.5" fill="white" />
-          <rect x="5" y="7.5" width="1.5" height="1.5" fill="white" />
-          {/* short building */}
-          <rect x="8.5" y="5" width="4.5" height="8" rx="0.3" stroke="white" strokeWidth="1.1" />
-          <rect x="9.5" y="6.5" width="1.5" height="1.5" fill="white" />
-          <rect x="9.5" y="9" width="1.5" height="1.5" fill="white" />
-          {/* ground line */}
-          <line x1="0.5" y1="13" x2="13.5" y2="13" stroke="white" strokeWidth="1.1" strokeLinecap="round" />
-        </svg>
+    <KakaoOverlay map={map} lat={lat} lng={lng} zIndex={20}>
+      <div className="flex flex-col items-center gap-1">
+        <div className="w-8 h-8 rounded-full flex items-center justify-center shadow-md" style={{ background: color }}>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            {/* tall building */}
+            <rect x="1" y="1" width="7" height="12" rx="0.3" stroke="white" strokeWidth="1.1" />
+            <rect x="2.5" y="2.5" width="1.5" height="1.5" fill="white" />
+            <rect x="5" y="2.5" width="1.5" height="1.5" fill="white" />
+            <rect x="2.5" y="5" width="1.5" height="1.5" fill="white" />
+            <rect x="5" y="5" width="1.5" height="1.5" fill="white" />
+            <rect x="2.5" y="7.5" width="1.5" height="1.5" fill="white" />
+            <rect x="5" y="7.5" width="1.5" height="1.5" fill="white" />
+            {/* short building */}
+            <rect x="8.5" y="5" width="4.5" height="8" rx="0.3" stroke="white" strokeWidth="1.1" />
+            <rect x="9.5" y="6.5" width="1.5" height="1.5" fill="white" />
+            <rect x="9.5" y="9" width="1.5" height="1.5" fill="white" />
+            {/* ground line */}
+            <line x1="0.5" y1="13" x2="13.5" y2="13" stroke="white" strokeWidth="1.1" strokeLinecap="round" />
+          </svg>
+        </div>
+        <span className="text-[9px] font-500 text-white px-1.5 py-0.5 rounded-full whitespace-nowrap" style={{ background: color }}>{label}</span>
       </div>
-      <span className="text-[9px] font-500 text-white px-1.5 py-0.5 rounded-full" style={{ background: color }}>{label}</span>
-    </div>
+    </KakaoOverlay>
   )
 }
 
@@ -204,13 +356,25 @@ function RangeSlider({ min, max, values, onChange, color }: {
 }
 
 // Floating edit drawer that slides up from bottom on screens 2 & 3
-function ConditionsDrawer({ cond, setCond, open, onClose }: {
+function ConditionsDrawer({ cond, setCond, open, onClose, onPickWork }: {
   cond: Conditions; setCond: (c: Conditions) => void; open: boolean; onClose: () => void
+  onPickWork: (key: 'p1Work' | 'p2Work', text: string, coord: LatLng) => void
 }) {
   const [local, setLocal] = useState<Conditions>(cond)
+  // Coordinates picked from the dropdown while the drawer is open, staged here (like
+  // every other field) until "다시 검색" is clicked.
+  const [localCoords, setLocalCoords] = useState<Partial<Record<'p1Work' | 'p2Work', LatLng>>>({})
 
   // Sync local when reopened
-  const handleOpen = () => setLocal(cond)
+  const handleOpen = () => { setLocal(cond); setLocalCoords({}) }
+
+  const confirm = () => {
+    setCond(local)
+    for (const [key, coord] of Object.entries(localCoords) as [('p1Work' | 'p2Work'), LatLng][]) {
+      onPickWork(key, local[key], coord)
+    }
+    onClose()
+  }
 
   return (
     <>
@@ -226,7 +390,7 @@ function ConditionsDrawer({ cond, setCond, open, onClose }: {
           <span className="text-sm font-500 text-[#555]">조건 수정</span>
           <div className="flex gap-2">
             <button
-              onClick={() => { setCond(local); onClose() }}
+              onClick={confirm}
               className="px-4 py-1.5 bg-[#111] text-white text-xs font-500 rounded-full hover:bg-[#333] transition-colors"
             >
               다시 검색
@@ -249,10 +413,11 @@ function ConditionsDrawer({ cond, setCond, open, onClose }: {
               </div>
               <div>
                 <label className="text-xs text-[#aaa] block mb-1.5">직장 위치</label>
-                <div className="flex items-center gap-2 border border-[#ede9e2] rounded-xl px-3 py-2 bg-[#faf9f7]">
-                  <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="6" r="3" stroke="#aaa" strokeWidth="1.2" /><path d="M7 12s4-3.5 4-6a4 4 0 1 0-8 0c0 2.5 4 6 4 6z" stroke="#aaa" strokeWidth="1.2" fill="none" /></svg>
-                  <input type="text" value={local[workKey]} onChange={e => setLocal({ ...local, [workKey]: e.target.value })} className="flex-1 text-sm outline-none bg-transparent text-[#333]" />
-                </div>
+                <WorkSearchInput
+                  value={local[workKey]}
+                  onChange={text => setLocal({ ...local, [workKey]: text })}
+                  onPick={(text, coord) => { setLocal({ ...local, [workKey]: text }); setLocalCoords({ ...localCoords, [workKey]: coord }) }}
+                />
               </div>
               <div>
                 <div className="flex justify-between mb-2">
@@ -277,7 +442,9 @@ function ConditionsDrawer({ cond, setCond, open, onClose }: {
 }
 
 // Screen 1
-function InputScreen({ cond, setCond, onSubmit }: { cond: Conditions; setCond: (c: Conditions) => void; onSubmit: () => void }) {
+function InputScreen({ cond, setCond, onSubmit, onPickWork }: {
+  cond: Conditions; setCond: (c: Conditions) => void; onSubmit: () => void; onPickWork: (key: 'p1Work' | 'p2Work', text: string, coord: LatLng) => void
+}) {
   return (
     <div className="min-h-screen flex flex-col bg-[#faf9f7]">
       <header className="px-8 pt-7 pb-5">
@@ -304,15 +471,11 @@ function InputScreen({ cond, setCond, onSubmit }: { cond: Conditions; setCond: (
 
               <div>
                 <label className="text-xs text-[#bbb] block mb-1.5">직장 위치</label>
-                <div className="flex items-center gap-2 border border-[#ede9e2] rounded-xl px-3 py-2.5 bg-[#faf9f7]">
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="6" r="3" stroke="#bbb" strokeWidth="1.2" /><path d="M7 12s4-3.5 4-6a4 4 0 1 0-8 0c0 2.5 4 6 4 6z" stroke="#bbb" strokeWidth="1.2" fill="none" /></svg>
-                  <input
-                    type="text"
-                    value={cond[workKey]}
-                    onChange={e => setCond({ ...cond, [workKey]: e.target.value })}
-                    className="flex-1 text-sm outline-none bg-transparent text-[#333] placeholder-[#ccc]"
-                  />
-                </div>
+                <WorkSearchInput
+                  value={cond[workKey]}
+                  onChange={text => setCond({ ...cond, [workKey]: text })}
+                  onPick={(text, coord) => onPickWork(workKey, text, coord)}
+                />
               </div>
 
               <div>
@@ -346,9 +509,13 @@ function InputScreen({ cond, setCond, onSubmit }: { cond: Conditions; setCond: (
 }
 
 // Screen 2
-function MapScreen({ cond, setCond, onSelect, onHome }: { cond: Conditions; setCond: (c: Conditions) => void; onSelect: (id: number) => void; onHome: () => void }) {
+function MapScreen({ cond, setCond, onSelect, onHome, workCoords, onPickWork }: {
+  cond: Conditions; setCond: (c: Conditions) => void; onSelect: (id: number) => void; onHome: () => void; workCoords: { p1: LatLng; p2: LatLng }
+  onPickWork: (key: 'p1Work' | 'p2Work', text: string, coord: LatLng) => void
+}) {
   const [hovered, setHovered] = useState<number | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const fitPoints = [workCoords.p1, workCoords.p2, ...PROPERTIES.map(p => ({ lat: p.lat, lng: p.lng }))]
 
   return (
     <div className="h-screen flex flex-col bg-[#faf9f7]">
@@ -390,36 +557,47 @@ function MapScreen({ cond, setCond, onSelect, onHome }: { cond: Conditions; setC
         </aside>
 
         <div className="flex-1 relative">
-          <MapBackground />
-          <WorkMarker x={58} y={56} color="#16a34a" label={cond.p1Work} />
-          <WorkMarker x={22} y={30} color="#7c3aed" label={cond.p2Work} />
-          {PROPERTIES.map(p => (
-            <button
-              key={p.id}
-              onClick={() => onSelect(p.id)}
-              onMouseEnter={() => setHovered(p.id)}
-              onMouseLeave={() => setHovered(null)}
-              className="absolute z-30"
-              style={{ left: `${p.x}%`, top: `${p.y}%`, transform: 'translate(-50%, -50%)' }}
-            >
-              <div className={`px-2.5 py-1 text-xs font-600 rounded-full border shadow-sm transition-all ${hovered === p.id ? 'bg-[#2d2a24] text-white border-[#2d2a24] shadow-md' : 'bg-white text-[#2d2a24] border-[#ddd] hover:border-[#999]'}`}>
-                {p.price}만
-              </div>
-            </button>
-          ))}
+          <KakaoMap fitPoints={fitPoints}>
+            {map => (
+              <>
+                <WorkMarker map={map} lat={workCoords.p1.lat} lng={workCoords.p1.lng} color="#16a34a" label={cond.p1Work} />
+                <WorkMarker map={map} lat={workCoords.p2.lat} lng={workCoords.p2.lng} color="#7c3aed" label={cond.p2Work} />
+                {PROPERTIES.map(p => (
+                  <KakaoOverlay key={p.id} map={map} lat={p.lat} lng={p.lng} zIndex={hovered === p.id ? 31 : 30}>
+                    <button
+                      onClick={() => onSelect(p.id)}
+                      onMouseEnter={() => setHovered(p.id)}
+                      onMouseLeave={() => setHovered(null)}
+                    >
+                      <div className={`px-2.5 py-1 text-xs font-600 rounded-full border shadow-sm transition-all whitespace-nowrap ${hovered === p.id ? 'bg-[#2d2a24] text-white border-[#2d2a24] shadow-md' : 'bg-white text-[#2d2a24] border-[#ddd] hover:border-[#999]'}`}>
+                        {p.price}만
+                      </div>
+                    </button>
+                  </KakaoOverlay>
+                ))}
+              </>
+            )}
+          </KakaoMap>
         </div>
       </div>
 
-      <ConditionsDrawer cond={cond} setCond={setCond} open={drawerOpen} onClose={() => setDrawerOpen(false)} />
+      <ConditionsDrawer cond={cond} setCond={setCond} open={drawerOpen} onClose={() => setDrawerOpen(false)} onPickWork={onPickWork} />
     </div>
   )
 }
 
 // Screen 3
-function DetailScreen({ propertyId, cond, setCond, onBack, onHome }: { propertyId: number; cond: Conditions; setCond: (c: Conditions) => void; onBack: () => void; onHome: () => void }) {
+function DetailScreen({ propertyId, cond, setCond, onBack, onHome, workCoords, onPickWork }: {
+  propertyId: number; cond: Conditions; setCond: (c: Conditions) => void; onBack: () => void; onHome: () => void; workCoords: { p1: LatLng; p2: LatLng }
+  onPickWork: (key: 'p1Work' | 'p2Work', text: string, coord: LatLng) => void
+}) {
   const p = PROPERTIES.find(x => x.id === propertyId)!
   const route = ROUTES[propertyId - 1]
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const fitPoints = [
+    { lat: p.lat, lng: p.lng }, workCoords.p1, workCoords.p2,
+    ...route.p1.map(s => ({ lat: s.lat, lng: s.lng })), ...route.p2.map(s => ({ lat: s.lat, lng: s.lng })),
+  ]
 
   return (
     <div className="h-screen flex flex-col bg-[#faf9f7]">
@@ -492,21 +670,22 @@ function DetailScreen({ propertyId, cond, setCond, onBack, onHome }: { propertyI
         </aside>
 
         <div className="flex-1 relative">
-          <MapBackground />
-          <svg className="absolute inset-0 w-full h-full pointer-events-none">
-            <TransitRoute stops={route.p1} personColor="#16a34a" />
-            <TransitRoute stops={route.p2} personColor="#7c3aed" />
-          </svg>
-          <TransitLegBadges stops={route.p1} />
-          <TransitLegBadges stops={route.p2} />
-          <div className="absolute z-20" style={{ left: `${p.x}%`, top: `${p.y}%`, transform: 'translate(-50%, -50%)' }}>
-            <div className="w-9 h-9 rounded-full bg-[#2d2a24] flex items-center justify-center shadow-lg">
-              <svg width="16" height="16" viewBox="0 0 20 20" fill="none"><path d="M10 2L3 8v10h5v-5h4v5h5V8L10 2z" fill="white" /></svg>
-            </div>
-          </div>
-          <WorkMarker x={58} y={56} color="#16a34a" label={cond.p1Work} />
-          <WorkMarker x={22} y={30} color="#7c3aed" label={cond.p2Work} />
-          <div className="absolute bottom-4 right-4 bg-white/90 backdrop-blur-sm border border-[#ede9e2] rounded-xl px-3 py-2.5 text-xs space-y-1.5 shadow-sm max-w-[160px]">
+          <KakaoMap fitPoints={fitPoints}>
+            {map => (
+              <>
+                <TransitRoute map={map} stops={route.p1} personColor="#16a34a" />
+                <TransitRoute map={map} stops={route.p2} personColor="#7c3aed" />
+                <KakaoOverlay map={map} lat={p.lat} lng={p.lng} zIndex={25}>
+                  <div className="w-9 h-9 rounded-full bg-[#2d2a24] flex items-center justify-center shadow-lg">
+                    <svg width="16" height="16" viewBox="0 0 20 20" fill="none"><path d="M10 2L3 8v10h5v-5h4v5h5V8L10 2z" fill="white" /></svg>
+                  </div>
+                </KakaoOverlay>
+                <WorkMarker map={map} lat={workCoords.p1.lat} lng={workCoords.p1.lng} color="#16a34a" label={cond.p1Work} />
+                <WorkMarker map={map} lat={workCoords.p2.lat} lng={workCoords.p2.lng} color="#7c3aed" label={cond.p2Work} />
+              </>
+            )}
+          </KakaoMap>
+          <div className="absolute bottom-4 right-4 bg-white/90 backdrop-blur-sm border border-[#ede9e2] rounded-xl px-3 py-2.5 text-xs space-y-1.5 shadow-sm max-w-[160px] pointer-events-none">
             {[['#16a34a', '사람 1 경로'], ['#7c3aed', '사람 2 경로']].map(([color, label]) => (
               <div key={label} className="flex items-center gap-2">
                 <div className="w-5 h-0.5 rounded-full" style={{ background: color, opacity: 0.4 }} />
@@ -525,10 +704,15 @@ function DetailScreen({ propertyId, cond, setCond, onBack, onHome }: { propertyI
         </div>
       </div>
 
-      <ConditionsDrawer cond={cond} setCond={setCond} open={drawerOpen} onClose={() => setDrawerOpen(false)} />
+      <ConditionsDrawer cond={cond} setCond={setCond} open={drawerOpen} onClose={() => setDrawerOpen(false)} onPickWork={onPickWork} />
     </div>
   )
 }
+
+// Fallback coordinates for the default work locations, used until Kakao's geocoder
+// resolves the current input (or if it ever fails to find a match).
+const DEFAULT_P1_COORD: LatLng = { lat: 37.4975555, lng: 127.0268078 } // 강남역
+const DEFAULT_P2_COORD: LatLng = { lat: 37.5567647, lng: 126.9237401 } // 홍대입구역
 
 export default function App() {
   const [screen, setScreen] = useState<1 | 2 | 3>(1)
@@ -538,11 +722,41 @@ export default function App() {
     p1Price: [30, 70], p2Price: [40, 80],
     p1Area: [15, 35], p2Area: [20, 40],
   })
+  const [workCoords, setWorkCoords] = useState<{ p1: LatLng; p2: LatLng }>({ p1: DEFAULT_P1_COORD, p2: DEFAULT_P2_COORD })
+  const kakaoReady = useKakaoReady()
+  // Remembers the last text that was resolved via an explicit dropdown pick (with its
+  // exact coordinate), so the debounced fallback geocoder below doesn't immediately
+  // re-search and possibly jump the marker to a different, less precise match.
+  const lastPicked = useRef<{ p1Work?: { text: string; coord: LatLng }; p2Work?: { text: string; coord: LatLng } }>({})
+
+  const handlePickWork = (key: 'p1Work' | 'p2Work', text: string, coord: LatLng) => {
+    lastPicked.current = { ...lastPicked.current, [key]: { text, coord } }
+    setCond(c => ({ ...c, [key]: text }))
+    setWorkCoords(w => ({ ...w, [key === 'p1Work' ? 'p1' : 'p2']: coord }))
+  }
+
+  // Re-geocode whenever either work-location text changes (debounced so we don't
+  // fire a request on every keystroke), unless that exact text was just set by an
+  // explicit dropdown pick above.
+  useEffect(() => {
+    if (!kakaoReady) return
+    const t = setTimeout(async () => {
+      const needP1 = lastPicked.current.p1Work?.text !== cond.p1Work
+      const needP2 = lastPicked.current.p2Work?.text !== cond.p2Work
+      if (!needP1 && !needP2) return
+      const [p1, p2] = await Promise.all([
+        needP1 ? geocodeKeyword(cond.p1Work) : Promise.resolve(lastPicked.current.p1Work!.coord),
+        needP2 ? geocodeKeyword(cond.p2Work) : Promise.resolve(lastPicked.current.p2Work!.coord),
+      ])
+      setWorkCoords({ p1: p1 ?? DEFAULT_P1_COORD, p2: p2 ?? DEFAULT_P2_COORD })
+    }, 400)
+    return () => clearTimeout(t)
+  }, [kakaoReady, cond.p1Work, cond.p2Work])
 
   const handleSelect = (id: number) => { setSelected(id); setScreen(3) }
   const goHome = () => setScreen(1)
 
-  if (screen === 1) return <InputScreen cond={cond} setCond={setCond} onSubmit={() => setScreen(2)} />
-  if (screen === 2) return <MapScreen cond={cond} setCond={setCond} onSelect={handleSelect} onHome={goHome} />
-  return <DetailScreen propertyId={selected} cond={cond} setCond={setCond} onBack={() => setScreen(2)} onHome={goHome} />
+  if (screen === 1) return <InputScreen cond={cond} setCond={setCond} onSubmit={() => setScreen(2)} onPickWork={handlePickWork} />
+  if (screen === 2) return <MapScreen cond={cond} setCond={setCond} onSelect={handleSelect} onHome={goHome} workCoords={workCoords} onPickWork={handlePickWork} />
+  return <DetailScreen propertyId={selected} cond={cond} setCond={setCond} onBack={() => setScreen(2)} onHome={goHome} workCoords={workCoords} onPickWork={handlePickWork} />
 }
