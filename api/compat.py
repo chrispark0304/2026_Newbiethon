@@ -84,6 +84,10 @@ def geocode(query: str = Query(..., min_length=1, max_length=80)):
 class PersonCriteria(BaseModel):
     workLat: float
     workLng: float
+    #: 이 사람이 부담할 보증금 범위(만원). 월세와 마찬가지로 두 사람 값을 더해 비교한다.
+    #: 프론트가 안 보내면(구버전 등) 기본값이 전체 범위라 아무것도 거르지 않는다.
+    depositMin: float = 0
+    depositMax: float = Field(default=1e9)
     #: 이 사람이 부담할 월세 범위(만원). 두 사람 값을 더해 매물 총액과 비교한다.
     priceMin: float = 0
     priceMax: float = Field(default=1e9)
@@ -101,6 +105,7 @@ SORTS = {
     "price":       lambda r: (r[2].rent_total, -r[0]),       # 환산월세 싼 순
     "commute":     lambda r: (max(r[1]), -r[0]),             # 더 오래 걸리는 쪽이 짧은 순
     "area":        lambda r: (-r[2].area_sqm, -r[0]),        # 넓은 순
+    "transfers":   lambda r: (max(r[4]), max(r[1]), -r[0]),  # 환승 적은 순 → 통근 짧은 순
 }
 
 
@@ -114,7 +119,8 @@ class SearchBody(BaseModel):
 
     # --- 아래는 명세 밖. 프론트가 안 보내면 기본값으로 동작한다 ---
     #: 목록 정렬 기준. SORTS 참조.
-    sortBy: Literal["recommended", "balanced", "price", "commute", "area"] = "recommended"
+    sortBy: Literal["recommended", "balanced", "price", "commute", "area",
+                    "transfers"] = "recommended"
     #: 더 오래 걸리는 쪽 통근이 이 값을 넘으면 제외. 0이면 제한 없음.
     commuteLimitMin: int = Field(default=60, ge=0, le=180)
     #: 같은 건물 최대 노출 수. 실거래가는 호실별로 여러 건이 잡힌다. 0이면 제한 없음.
@@ -123,24 +129,25 @@ class SearchBody(BaseModel):
     maxPerDong: int = Field(default=3, ge=0, le=50)
 
 
-def _criteria_to_ranges(body: SearchBody) -> tuple[tuple[float, float], tuple[float, float]]:
+def _criteria_to_ranges(body: SearchBody) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]]:
     """1인 기준 조건 두 개 → 매물 전체에 적용할 범위.
 
     **돈은 나눠 내고 집은 같이 쓴다.** 그래서 둘을 다르게 합친다.
 
-      가격: 합집합(더한다). p1이 70까지, p2가 80까지 내면 150만원짜리 집을 볼 수 있다.
+      보증금·가격: 합집합(더한다). p1이 70까지, p2가 80까지 내면 150만원짜리 집을 볼 수 있다.
       면적: 교집합. "이 집이 8~20평이면 좋겠다"는 집 전체에 대한 희망이므로,
             둘 다 만족하는 구간만 남긴다. 더하면 35~75평이 되어 연립다세대에는
             해당 매물이 거의 없다(8,317건 중 62건).
 
     **범위가 안 겹치면 빈 구간을 그대로 돌려준다.** 한쪽이 10평 이하를 원하고 다른 쪽이
     15평 이상을 원하면 둘 다 만족하는 집은 없다. 억지로 넓혀 주면 두 사람 조건을 모두
-    어긴 매물이 나가므로, 결과 없음으로 두고 프론트에 이유를 알려 주는 편이 정직하다.
+    어긴 매물이 나가므로, 호출 측에서 422로 이유를 알려 준다.
     """
+    deposit = (body.p1.depositMin + body.p2.depositMin, body.p1.depositMax + body.p2.depositMax)
     price = (body.p1.priceMin + body.p2.priceMin, body.p1.priceMax + body.p2.priceMax)
     lo = max(body.p1.areaMin, body.p2.areaMin) * SQM_PER_PYEONG
     hi = min(body.p1.areaMax, body.p2.areaMax) * SQM_PER_PYEONG
-    return price, (lo, hi)
+    return deposit, price, (lo, hi)
 
 
 @router.post("/api/listings/search")
@@ -149,18 +156,13 @@ def listings_search(body: SearchBody, response: Response):
 
     router_ = state["router"]
     items = state["listings"].all()
-    price, area = _criteria_to_ranges(body)
+    deposit, price, area = _criteria_to_ranges(body)
     if area[1] < area[0]:
         raise HTTPException(422, {
             "code": "AREA_RANGE_DISJOINT",
             "message": (f"두 사람의 평수 조건이 겹치지 않습니다 "
                         f"({body.p1.areaMin:g}~{body.p1.areaMax:g}평 / "
                         f"{body.p2.areaMin:g}~{body.p2.areaMax:g}평)."),
-        })
-    if price[1] < price[0]:
-        raise HTTPException(422, {
-            "code": "PRICE_RANGE_INVALID",
-            "message": "가격 범위가 뒤집혀 있습니다.",
         })
 
     fields = []
@@ -176,18 +178,24 @@ def listings_search(body: SearchBody, response: Response):
             })
 
     # 환산월세로 거른다. 전세는 월세가 0이라 월세만 보면 비교가 안 된다.
+    # 보증금은 환산월세와 별개로 한 번 더 거른다 — "월세는 맞는데 보증금이 너무 높다"는
+    # 경우를 잡아내려면 환산월세(rent_total) 하나만으로는 부족하다.
     pool = [l for l in items
-            if price[0] <= l.rent_total <= price[1] and area[0] <= l.area_sqm <= area[1]]
+            if price[0] <= l.rent_total <= price[1]
+            and deposit[0] <= l.deposit <= deposit[1]
+            and area[0] <= l.area_sqm <= area[1]]
 
-    cache: dict[tuple[float, float], list[int]] = {}
+    # 환승 횟수는 Commute가 이미 들고 있다(탐색 중 센 값이라 경로 복원이 필요 없다).
+    # 그래서 정렬용으로 여기서 함께 받아 둔다.
+    cache: dict[tuple[float, float], tuple[list[int], list[int]]] = {}
     out = []
     for l in pool:
         key = (l.lat, l.lon)
         if key not in cache:
-            cache[key] = [router_.commute(l.lat, l.lon, f, explain=False,
-                                         radius_m=LISTING_ACCESS_WALK_M).total_sec
-                          for f in fields]
-        secs = cache[key]
+            cs = [router_.commute(l.lat, l.lon, f, explain=False, radius_m=LISTING_ACCESS_WALK_M)
+                  for f in fields]
+            cache[key] = ([c.total_sec for c in cs], [c.transfers for c in cs])
+        secs, transfers = cache[key]
         if any(s >= INF for s in secs):
             continue
         minutes = [(s + 30) // 60 for s in secs]
@@ -196,7 +204,7 @@ def listings_search(body: SearchBody, response: Response):
         # 통근시간만 보면 예산 상한에 붙은 비싼 집과 훨씬 싼 집이 동급이 된다.
         # 가격·면적·통근을 함께 보고, 두 사람 만족도 격차에 벌점을 준다.
         score = evaluate(l, minutes, price, (area[0], area[1]))
-        out.append((score.joint, minutes, l, score.balance))
+        out.append((score.joint, minutes, l, score.balance, transfers))
 
     out.sort(key=SORTS[body.sortBy])
     total_matched = len(out)          # 다양성 제한·limit으로 자르기 전 개수
@@ -221,7 +229,7 @@ def listings_search(body: SearchBody, response: Response):
         out = kept
 
     # 응답 본문은 명세대로 배열 그대로 두고, 잘라내기 전 총 개수만 헤더로 알린다.
-    # "매물 100개"라고만 쓰면 뒤에 1,400건이 더 있다는 걸 화면에서 알 수 없다.
+    # "매물 150개"라고만 쓰면 뒤에 2,500건이 더 있다는 걸 화면에서 알 수 없다.
     response.headers["X-Total-Matched"] = str(total_matched)
     response.headers["Access-Control-Expose-Headers"] = "X-Total-Matched"
 
@@ -244,9 +252,10 @@ def listings_search(body: SearchBody, response: Response):
         "nearestStation": (lambda s: {"name": s.name, "lines": s.lines, "walkMin": s.walk_min}
                            if s else None)(station.get(l.id)),
         "commuteMinutes": minutes,
+        "transfers": transfers,
         "jointScore": joint,
         "balanceScore": balance,
-    } for joint, minutes, l, balance in out[: body.limit]]
+    } for joint, minutes, l, balance, transfers in out[: body.limit]]
 
 
 # --------------------------------------------------------------- (C) 통근 경로

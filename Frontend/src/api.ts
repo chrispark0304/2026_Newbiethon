@@ -22,6 +22,9 @@ export type Listing = {
   buildingName: string
   nearestStation: { name: string; lines: string[]; walkMin: number } | null
   commuteMinutes: [number, number]
+  // 사람별 환승 횟수. "환승 적은 순" 정렬용 — 목록 정렬 버튼에서 쓴다.
+  // 백엔드를 재시작하기 전에는 없을 수 있어서 optional로 둔다.
+  transfers?: [number, number]
   jointScore: number
 }
 
@@ -124,6 +127,8 @@ export function geocode(query: string): Promise<Geo> {
 export type PersonQuery = {
   workLat: number
   workLng: number
+  depositMin: number
+  depositMax: number
   priceMin: number
   priceMax: number
   areaMin: number
