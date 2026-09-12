@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, Fragment } from 'react'
+import { createPortal } from 'react-dom'
 import { fetchCommute, searchListings } from './api'
 import type { ApiStop, Commute, Listing, PathSegment } from './api'
 
@@ -175,12 +176,7 @@ function WorkSearchInput({ value, onChange, onPick, picked }: {
 // Fills its parent (must be `relative`) with a live Kakao map, auto-fit to `fitPoints`.
 // Children are provided via render-prop once the map instance exists, so overlays/
 // polylines never try to attach before there's a map to attach to.
-//
-// The tile layer, an optional dimming wash, and our own marker layer are three
-// stacked siblings (not nested) — that's what lets `dim` fade only the map tiles
-// while `KakaoOverlay` markers (rendered in the top layer, positioned by hand via
-// the map's projection) stay fully crisp on top of the wash.
-function KakaoMap({ fitPoints, level = 6, dim, children }: { fitPoints: LatLng[]; level?: number; dim?: boolean; children: (map: any) => React.ReactNode }) {
+function KakaoMap({ fitPoints, level = 6, children }: { fitPoints: LatLng[]; level?: number; children: (map: any) => React.ReactNode }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [map, setMap] = useState<any>(null)
   const ready = useKakaoReady()
@@ -207,48 +203,33 @@ function KakaoMap({ fitPoints, level = 6, dim, children }: { fitPoints: LatLng[]
   }, [map, JSON.stringify(fitPoints)])
 
   return (
-    <div className="absolute inset-0 w-full h-full overflow-hidden">
-      <div ref={containerRef} className="absolute inset-0 w-full h-full bg-[#f5f4f0]" />
-      {dim && <div className="absolute inset-0 pointer-events-none" style={{ background: 'rgba(255,255,255,0.78)' }} />}
-      <div className="absolute inset-0 pointer-events-none">{map && children(map)}</div>
+    <div ref={containerRef} className="absolute inset-0 w-full h-full bg-[#f5f4f0]">
+      {map && children(map)}
     </div>
   )
 }
 
-// A marker pinned to a lat/lng, positioned by hand via the map's projection instead of
-// kakao.maps.CustomOverlay. CustomOverlay would physically move our content into Kakao's
-// own tile-layer DOM, which is exactly the layer `dim` fades — rendering it ourselves in
-// the marker layer above the wash is what keeps markers crisp while the map fades.
+// A React-rendered marker pinned to a lat/lng via kakao.maps.CustomOverlay.
+// We hand Kakao a plain div and portal our JSX into it, so normal onClick/hover still
+// work, and Kakao itself keeps it in sync during pan/zoom (including wheel-zoom under
+// the marker) with no extra plumbing from us.
 function KakaoOverlay({ map, lat, lng, zIndex, children }: { map: any; lat: number; lng: number; zIndex?: number; children: React.ReactNode }) {
-  const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
+  const elRef = useRef<HTMLDivElement | null>(null)
+  if (!elRef.current) elRef.current = document.createElement('div')
 
-  // Kakao's center_changed/zoom_changed only fire once a pan or zoom *settles* — during
-  // the animated transition itself they stay silent, so a marker driven by those events
-  // alone visibly freezes mid-zoom/mid-drag and then jumps at the end. Tracking every
-  // frame instead keeps it glued to its geo point throughout the whole animation.
   useEffect(() => {
     const kakao = (window as any).kakao
-    const latlng = new kakao.maps.LatLng(lat, lng)
-    let raf: number
-    let last: { x: number; y: number } | null = null
-    const tick = () => {
-      const p = map.getProjection().containerPointFromCoords(latlng)
-      if (!last || last.x !== p.x || last.y !== p.y) {
-        last = { x: p.x, y: p.y }
-        setPos(last)
-      }
-      raf = requestAnimationFrame(tick)
-    }
-    raf = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(raf)
-  }, [map, lat, lng])
+    const overlay = new kakao.maps.CustomOverlay({
+      position: new kakao.maps.LatLng(lat, lng),
+      content: elRef.current,
+      xAnchor: 0.5, yAnchor: 0.5,
+      zIndex,
+    })
+    overlay.setMap(map)
+    return () => overlay.setMap(null)
+  }, [map, lat, lng, zIndex])
 
-  if (!pos) return null
-  return (
-    <div className="absolute pointer-events-auto" style={{ left: pos.x, top: pos.y, transform: 'translate(-50%, -50%)', zIndex }}>
-      {children}
-    </div>
-  )
+  return createPortal(children, elRef.current)
 }
 
 function KakaoPolyline({ map, path, color, width = 4, opacity = 0.9, dashed = false }: {
@@ -771,7 +752,7 @@ function MapScreen({ cond, setCond, onSelect, onHome, workCoords, onPickWork, li
         </aside>
 
         <div className="flex-1 relative">
-          <KakaoMap fitPoints={fitPoints} dim>
+          <KakaoMap fitPoints={fitPoints}>
             {map => (
               <>
                 <KakaoZoomWatcher map={map} onChange={setZoomLevel} />
