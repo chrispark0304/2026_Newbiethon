@@ -264,6 +264,20 @@ function KakaoZoomWatcher({ map, onChange }: { map: any; onChange: (level: numbe
   return null
 }
 
+// Reports the map's current viewport bounds, so the sidebar list can be filtered down
+// to "what's actually visible right now" instead of every matching listing. `idle`
+// fires once after any pan/zoom settles, which is exactly when the list should refresh.
+function MapBoundsWatcher({ map, onChange }: { map: any; onChange: (bounds: any) => void }) {
+  useEffect(() => {
+    const kakao = (window as any).kakao
+    const handler = () => onChange(map.getBounds())
+    handler()
+    kakao.maps.event.addListener(map, 'idle', handler)
+    return () => kakao.maps.event.removeListener(map, 'idle', handler)
+  }, [map])
+  return null
+}
+
 // Reports whether the map is currently moving — zooming *or* panning. Kakao's
 // zoom_changed/center_changed events only fire once a transition settles, so instead
 // we watch level+center every frame: any change means "moving", and we hold that for a
@@ -672,7 +686,7 @@ function PriceBubble({ p, map, hovered, onSelect, setHovered }: {
   return (
     <KakaoOverlay map={map} lat={p.lat} lng={p.lng} zIndex={hovered === p.id ? 31 : 30}>
       <button onClick={() => onSelect(p.id)} onMouseEnter={() => setHovered(p.id)} onMouseLeave={() => setHovered(null)}>
-        <div className={`px-2.5 py-1 text-xs font-600 rounded-full border shadow-sm transition-all whitespace-nowrap ${hovered === p.id ? 'bg-[#2d2a24] text-white border-[#2d2a24] shadow-md' : 'bg-white text-[#2d2a24] border-[#ddd] hover:border-[#999]'}`}>
+        <div className={`px-3.5 py-1.5 text-sm font-800 rounded-full border-2 shadow-md transition-all whitespace-nowrap ${hovered === p.id ? 'bg-[#2d2a24] text-white border-[#2d2a24] scale-105' : 'bg-white text-[#2d2a24] border-[#2d2a24]'}`}>
           {shortPrice(p)}
         </div>
       </button>
@@ -690,10 +704,15 @@ function MapScreen({ cond, setCond, onSelect, onHome, workCoords, onPickWork, li
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [zoomLevel, setZoomLevel] = useState(CLUSTER_LEVEL)
   const [moving, setMoving] = useState(false)
+  const [bounds, setBounds] = useState<any>(null)
   // 매물이 아직 없으면 직장 두 곳만으로 지도를 맞춘다.
   const fitPoints = [workCoords.p1, workCoords.p2, ...listings.map(p => ({ lat: p.lat, lng: p.lng }))]
   const clusters = clusterByGu(listings)
   const clustered = zoomLevel >= CLUSTER_LEVEL
+  // 목록은 지금 지도 화면 안에 있는 매물만 — 줌/이동할 때마다 idle 이벤트로 갱신된다.
+  const visibleListings = bounds
+    ? listings.filter(p => bounds.contain(new (window as any).kakao.maps.LatLng(p.lat, p.lng)))
+    : listings
 
   return (
     <div className="h-screen flex flex-col bg-[#faf9f7]">
@@ -705,8 +724,8 @@ function MapScreen({ cond, setCond, onSelect, onHome, workCoords, onPickWork, li
             {loading
               ? '불러오는 중…'
               : total > listings.length
-                ? `매물 ${listings.length}개 · 조건 충족 ${total.toLocaleString()}개`
-                : `매물 ${listings.length}개`}
+                ? `지도에 ${visibleListings.length}개 · 조건 충족 ${total.toLocaleString()}개`
+                : `지도에 ${visibleListings.length}개`}
           </span>
         </button>
         <button
@@ -719,34 +738,42 @@ function MapScreen({ cond, setCond, onSelect, onHome, workCoords, onPickWork, li
       </header>
 
       <div className="flex-1 flex overflow-hidden">
-        <aside className="w-[240px] border-r border-[#ede9e2] overflow-y-auto scroll-hide flex-shrink-0 bg-white">
+        <aside className="w-[300px] border-r border-[#ede9e2] overflow-y-auto scroll-hide flex-shrink-0 bg-white">
           {error && <div className="p-3"><Notice>{error}</Notice></div>}
           {!error && !loading && listings.length === 0 && (
             <p className="px-4 py-6 text-[13px] leading-relaxed text-[#999]">
               조건에 맞는 매물이 없어요.<br />가격이나 평수 범위를 넓혀보세요.
             </p>
           )}
-          {listings.map(p => (
+          {!error && !loading && listings.length > 0 && visibleListings.length === 0 && (
+            <p className="px-4 py-6 text-[13px] leading-relaxed text-[#999]">
+              지금 보이는 지도 범위엔 매물이 없어요.<br />지도를 이동하거나 축소해보세요.
+            </p>
+          )}
+          {visibleListings.map(p => (
             <button
               key={p.id}
               onClick={() => onSelect(p.id)}
               onMouseEnter={() => setHovered(p.id)}
               onMouseLeave={() => setHovered(null)}
-              className={`w-full text-left px-4 py-4 border-b border-[#f0ece6] flex gap-3 transition-colors ${hovered === p.id ? 'bg-[#f7f5f0]' : ''}`}
+              className={`w-full text-left px-5 py-5 border-b border-[#f0ece6] flex flex-col gap-2 transition-colors ${hovered === p.id ? 'bg-[#f7f5f0]' : ''}`}
             >
-              <div className="w-9 h-9 rounded-xl bg-[#f0ece6] flex items-center justify-center flex-shrink-0 mt-0.5">
-                <svg width="16" height="16" viewBox="0 0 20 20" fill="none"><path d="M10 2L3 8v10h5v-5h4v5h5V8L10 2z" fill="#aaa" /></svg>
+              <div className="text-xl font-800 text-[#2d2a24] tracking-tight leading-none">{priceLabel(p)}</div>
+              <div className="text-[11px] text-[#aaa]">{termsLabel(p)}</div>
+              <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                <span className="text-[11px] font-700 px-2 py-0.5 rounded-full" style={{ background: '#dcefe5', color: '#16a34a' }}>
+                  {p.commuteMinutes[0]}분
+                </span>
+                <span className="text-[11px] font-700 px-2 py-0.5 rounded-full" style={{ background: '#eae6fb', color: '#7c3aed' }}>
+                  {p.commuteMinutes[1]}분
+                </span>
+                {p.nearestStation && (
+                  <span className="text-[11px] font-600 px-2 py-0.5 rounded-full bg-[#f0ece6] text-[#888]">
+                    {p.nearestStation.name}역 도보 {p.nearestStation.walkMin}분
+                  </span>
+                )}
               </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-600 text-[#2d2a24]">{priceLabel(p)}</div>
-                <div className="text-[11px] text-[#aaa] mt-0.5 truncate">{termsLabel(p)}</div>
-                <div className="text-xs text-[#999] mt-0.5 truncate">{p.neighborhood}</div>
-                <div className="text-xs text-[#bbb] mt-0.5">{p.floor}층 · {p.area}평</div>
-                <div className="text-[10px] text-[#bbb] mt-1 truncate">
-                  통근 {p.commuteMinutes[0]}분 · {p.commuteMinutes[1]}분
-                  {p.nearestStation && ` · ${p.nearestStation.name} 도보 ${p.nearestStation.walkMin}분`}
-                </div>
-              </div>
+              <div className="text-xs text-[#999] mt-0.5 truncate">{p.neighborhood} · {p.floor}층 · {p.area}평</div>
             </button>
           ))}
         </aside>
@@ -757,6 +784,7 @@ function MapScreen({ cond, setCond, onSelect, onHome, workCoords, onPickWork, li
               <>
                 <KakaoZoomWatcher map={map} onChange={setZoomLevel} />
                 <MapMotionWatcher map={map} onChange={setMoving} />
+                <MapBoundsWatcher map={map} onChange={setBounds} />
                 {!moving && <WorkMarker map={map} lat={workCoords.p1.lat} lng={workCoords.p1.lng} color="#16a34a" label={cond.p1Work} />}
                 {!moving && <WorkMarker map={map} lat={workCoords.p2.lat} lng={workCoords.p2.lng} color="#7c3aed" label={cond.p2Work} />}
                 {!moving && (clustered
@@ -768,19 +796,21 @@ function MapScreen({ cond, setCond, onSelect, onHome, workCoords, onPickWork, li
                             const bounds = new kakao.maps.LatLngBounds()
                             c.members.forEach(m => bounds.extend(new kakao.maps.LatLng(m.lat, m.lng)))
                             map.setBounds(bounds, 48)
-                            // 클러스터 안 매물끼리 너무 가까우면 setBounds가 과하게 확대해버린다.
-                            // 최소한 동네 정도는 보이는 수준으로 붙잡아 준다.
-                            if (map.getLevel() < CLUSTER_LEVEL - 3) map.setLevel(CLUSTER_LEVEL - 3)
+                            // 클러스터를 눌렀으면 무조건 낱개 매물이 보여야 한다. 매물끼리 너무 붙어있으면
+                            // setBounds가 과하게 확대하고, 너무 퍼져있으면 여전히 클러스터 레벨에 머무를 수
+                            // 있어서 둘 다 CLUSTER_LEVEL 바로 아래 구간으로 직접 눌러준다.
+                            map.setLevel(Math.min(Math.max(map.getLevel(), CLUSTER_LEVEL - 3), CLUSTER_LEVEL - 1))
                           }}
-                          className="flex flex-col items-center justify-center rounded-full shadow-md text-[#555] hover:brightness-95 transition-all"
+                          className="flex flex-col items-center justify-center rounded-full shadow-lg text-[#2b6ca3] hover:brightness-95 transition-all border-[3px] border-white"
                           style={{
                             width: 64 + Math.min(c.members.length, 12) * 3,
                             height: 64 + Math.min(c.members.length, 12) * 3,
-                            background: '#e5e5e5',
+                            background: '#cfe9f7',
+                            boxShadow: '0 4px 14px rgba(0,0,0,.18)',
                           }}
                         >
-                          <div className="text-sm font-700 leading-tight">월 {c.avgPrice}만</div>
-                          <div className="text-[10px] text-[#888] leading-tight mt-0.5">{c.gu} · {c.members.length}건</div>
+                          <div className="text-base font-800 leading-tight">월 {c.avgPrice}만</div>
+                          <div className="text-[10px] font-600 text-[#4a8ab8] leading-tight mt-0.5">{c.gu} · {c.members.length}건</div>
                         </button>
                       </KakaoOverlay>
                     ) : (
