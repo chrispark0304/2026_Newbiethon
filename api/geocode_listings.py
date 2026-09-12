@@ -11,6 +11,8 @@
 이미 있는 주소는 건너뛰므로 재실행해도 호출이 늘지 않는다.
 """
 from __future__ import annotations
+import csv
+import io
 import json
 import os
 import sys
@@ -18,10 +20,21 @@ import time
 import urllib.parse
 import urllib.request
 
-from .listings import ADDRESS_COORDS, RTMS_CSV, RtmsListings
+from .listings import ADDRESS_COORDS, RTMS_CSV
+from transit.textio import read_text
 
 ENDPOINT = "https://dapi.kakao.com/v2/local/search/address.json"
 SLEEP_SEC = 0.03
+
+
+def read_addresses(path) -> set[str]:
+    """CSV에서 `시군구 + 번지` 지번주소를 모두 뽑는다."""
+    out: set[str] = set()
+    for row in csv.DictReader(io.StringIO(read_text(path))):
+        addr = ((row.get("시군구") or "").strip() + " " + (row.get("번지") or "").strip()).strip()
+        if addr:
+            out.add(addr)
+    return out
 
 
 def geocode(query: str, key: str) -> list[float] | None:
@@ -43,7 +56,9 @@ def main() -> int:
         return 1
 
     cache = json.loads(ADDRESS_COORDS.read_text(encoding="utf-8")) if ADDRESS_COORDS.exists() else {}
-    addresses = sorted({l.address for l in RtmsListings(RTMS_CSV).all()})
+    # 원본 CSV를 직접 읽는다. RtmsListings는 좌표 없는 매물을 이미 걸러내므로
+    # 그쪽에서 주소를 뽑으면 "아직 지오코딩 안 된 주소"가 영원히 안 나온다.
+    addresses = sorted(read_addresses(RTMS_CSV))
 
     todo = [a for a in addresses if a not in cache]
     print(f"주소 {len(addresses)}개 · 캐시 {len(cache)}개 · 조회 {len(todo)}개")
