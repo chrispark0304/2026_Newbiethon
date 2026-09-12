@@ -1,0 +1,15 @@
+from_stop_id,to_stop_id,walk_sec
+SUB:용산,SUB:신용산,236
+SUB:의정부,SUB:경전철의정부,337
+SUB:신촌,SUB:서강대,394
+SUB:총신대입구,SUB:이수,190
+SUB:신용산,SUB:용산,236
+SUB:송정,SUB:공항시장,321
+SUB:이수,SUB:총신대입구,190
+SUB:몽촌토성,SUB:한성백제,391
+SUB:한성백제,SUB:몽촌토성,391
+SUB:공항시장,SUB:송정,321
+SUB:서강대,SUB:신촌,394
+SUB:경전철의정부,SUB:의정부,337
+SUB:서해구청,SUB:서구청,115
+SUB:서구청,SUB:서해구청,115

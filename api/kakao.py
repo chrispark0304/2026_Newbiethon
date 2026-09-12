@@ -1,0 +1,184 @@
+"""카카오맵 대중교통 경로 조회 클라이언트.
+
+    GET https://dapi.kakao.com/v2/routing/publictraffic
+        ?start_x&start_y&end_x&end_y[&s_name&e_name]
+        Authorization: KakaoAK {REST_API_KEY}
+
+    → { "status": "OK", "properties": {...},
+        "routes": [ { "properties": { "type", "totalDistance", "totalTime",
+                                      "transfers", "fare" } } ] }
+
+쿼터가 **하루 1,000건**이라 이 파일의 절반은 쿼터를 아끼는 코드다.
+  · 좌표를 반올림해 캐시 키로 쓴다 (실거래가 좌표는 동네 대표점이라 재사용률이 높다)
+  · 캐시를 디스크에 남겨 재시작해도 유지한다
+  · 일일 예산을 넘으면 조용히 None을 돌려주고 호출 측이 자체 엔진으로 폴백한다
+"""
+from __future__ import annotations
+import json
+import logging
+import os
+import threading
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
+
+log = logging.getLogger("gachisaljip.kakao")
+
+ENDPOINT = "https://dapi.kakao.com/v2/routing/publictraffic"
+CACHE_PATH = Path(__file__).resolve().parent / "data" / "kakao_cache.json"
+
+#: 하루 쿼터 1,000건에서 여유를 둔 값.
+DEFAULT_DAILY_BUDGET = int(os.environ.get("KAKAO_DAILY_BUDGET", "900"))
+
+#: 캐시 키로 쓸 좌표 소수점 자리. 4자리 ≈ 11m.
+COORD_PRECISION = 4
+
+#: 재시도하지 않을 응답. 좌표가 문제라 다시 불러도 같은 결과다.
+TERMINAL_STATUS = {"STARTNODES_NULL", "ENDNODES_NULL", "EQUAL_POINTS",
+                   "INVALID_REQUEST", "NO_RESULTS"}
+
+
+@dataclass
+class TransitResult:
+    total_sec: int
+    transfers: int
+    fare: int
+    mode: str          # BUS | SUBWAY | BUS_AND_SUBWAY
+    distance_m: int
+
+    @property
+    def minutes(self) -> int:
+        return (self.total_sec + 30) // 60
+
+
+class KakaoTransit:
+    def __init__(self, api_key: str | None = None,
+                 cache_path: Path = CACHE_PATH,
+                 daily_budget: int = DEFAULT_DAILY_BUDGET):
+        self.api_key = api_key or os.environ.get("KAKAO_REST_API_KEY")
+        self.cache_path = Path(cache_path)
+        self.daily_budget = daily_budget
+        self._lock = threading.Lock()
+        self._cache: dict[str, dict | None] = {}
+        self._day = date.today().isoformat()
+        self._calls = 0
+        self._load_cache()
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.api_key)
+
+    @property
+    def remaining(self) -> int:
+        self._roll_day()
+        return max(0, self.daily_budget - self._calls)
+
+    # ------------------------------------------------------------ 캐시
+    def _load_cache(self) -> None:
+        if not self.cache_path.exists():
+            return
+        try:
+            blob = json.loads(self.cache_path.read_text(encoding="utf-8"))
+            self._cache = blob.get("entries", {})
+            if blob.get("day") == self._day:
+                self._calls = blob.get("calls", 0)
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("카카오 캐시 로드 실패, 새로 시작: %s", exc)
+
+    def _save_cache(self) -> None:
+        try:
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            self.cache_path.write_text(json.dumps(
+                {"day": self._day, "calls": self._calls, "entries": self._cache},
+                ensure_ascii=False), encoding="utf-8")
+        except OSError as exc:
+            log.warning("카카오 캐시 저장 실패: %s", exc)
+
+    def _roll_day(self) -> None:
+        today = date.today().isoformat()
+        if today != self._day:
+            self._day, self._calls = today, 0
+
+    @staticmethod
+    def _key(origin, dest) -> str:
+        p = COORD_PRECISION
+        return (f"{origin[0]:.{p}f},{origin[1]:.{p}f}"
+                f">{dest[0]:.{p}f},{dest[1]:.{p}f}")
+
+    # ------------------------------------------------------------ 조회
+    def travel_time(self, origin: tuple[float, float], dest: tuple[float, float],
+                    *, s_name: str = "출발", e_name: str = "도착") -> TransitResult | None:
+        """(lat, lon) → (lat, lon) 대중교통 소요시간.
+
+        캐시 미스이고 예산도 남아 있을 때만 실제로 호출한다.
+        실패·쿼터초과·경로없음은 전부 None이다. 호출 측이 자체 엔진으로 폴백할 것.
+        """
+        if not self.enabled:
+            return None
+        key = self._key(origin, dest)
+
+        with self._lock:
+            if key in self._cache:
+                hit = self._cache[key]
+                return TransitResult(**hit) if hit else None
+            self._roll_day()
+            if self._calls >= self.daily_budget:
+                log.warning("카카오 일일 예산 소진 (%d건)", self._calls)
+                return None
+            self._calls += 1
+
+        result = self._request(origin, dest, s_name, e_name)
+        with self._lock:
+            self._cache[key] = vars(result) if result else None
+            self._save_cache()
+        return result
+
+    def _request(self, origin, dest, s_name, e_name) -> TransitResult | None:
+        params = urllib.parse.urlencode({
+            "start_x": f"{origin[1]:.7f}", "start_y": f"{origin[0]:.7f}",
+            "end_x": f"{dest[1]:.7f}", "end_y": f"{dest[0]:.7f}",
+            "s_name": s_name, "e_name": e_name,
+        })
+        req = urllib.request.Request(
+            f"{ENDPOINT}?{params}",
+            headers={"Authorization": f"KakaoAK {self.api_key}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                payload = json.load(resp)
+        except urllib.error.HTTPError as exc:
+            log.warning("카카오 HTTP %s: %s", exc.code, exc.read()[:200])
+            return None
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            log.warning("카카오 요청 실패: %s", exc)
+            return None
+
+        status = payload.get("status")
+        if status != "OK":
+            if status not in TERMINAL_STATUS:
+                log.warning("카카오 예상 못한 status: %s", status)
+            return None
+
+        routes = payload.get("routes") or []
+        if not routes:
+            return None
+        # 가장 빠른 경로를 고른다.
+        best = min(routes, key=lambda r: r.get("properties", {}).get("totalTime", 1 << 30))
+        prop = best.get("properties", {})
+        fare = prop.get("fare") or {}
+        return TransitResult(
+            total_sec=int(prop.get("totalTime", 0)),
+            transfers=int(prop.get("transfers", 0)),
+            fare=int(fare.get("value", 0) if isinstance(fare, dict) else fare or 0),
+            mode=str(prop.get("type", "")),
+            distance_m=int(prop.get("totalDistance", 0)),
+        )
+
+    def stats(self) -> dict:
+        self._roll_day()
+        return {"enabled": self.enabled, "calls_today": self._calls,
+                "budget": self.daily_budget, "remaining": self.remaining,
+                "cached": len(self._cache)}

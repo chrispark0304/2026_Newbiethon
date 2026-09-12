@@ -6,3 +6,8 @@ dist/
 *.local
 *.log
 .DS_Store
+
+# 런타임 캐시 — 쿼터 카운터가 들어 있어 머신마다 다르다
+api/data/kakao_cache.json
+__pycache__/
+*.pyc
