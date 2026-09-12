@@ -13,10 +13,20 @@ from dataclasses import dataclass
 
 #: 통근 점수 0점이 되는 기준 시간(분). 이보다 오래 걸리면 0점.
 COMMUTE_ZERO_MIN = 75
+
+#: 두 사람 통근시간 격차가 이만큼 벌어지면 균형 점수 0점. 0분 차이면 100점.
+#: 실제 분포가 중앙 16분 · 90퍼센타일 23~32분이라 35분이면 대부분이 0점 위에 놓인다.
+BALANCE_ZERO_GAP_MIN = 35
+
 #: 개인 점수 격차 벌점 계수.
-FAIRNESS_PENALTY = 0.30
+#: 통근 불균형은 아래 balance가 따로 보므로, 여기서는 방 배정 같은 나머지 불균형만 잡는다.
+#: (balance 도입 전에는 0.30이었는데 통근 격차를 이중으로 세게 된다.)
+FAIRNESS_PENALTY = 0.20
 
 DEFAULT_WEIGHTS = {"price": 1.0, "area": 1.0, "commute": 2.0}
+
+#: 최종 점수에서 "평균 개인 만족도"와 "통근 균형"의 배분.
+AVG_WEIGHT, BALANCE_WEIGHT = 3.0, 0.75
 
 
 def _clamp(v: float, lo: float = 0.0, hi: float = 100.0) -> float:
@@ -47,10 +57,24 @@ class Score:
     room_sqm: list[int]
     #: 사람별 월세 분담(만원). 방 면적 비율로 나눈다.
     share: list[int]
+    #: 두 사람 통근시간이 얼마나 비슷한가 (0~100). 0분 차이면 100점.
+    balance: float = 100.0
 
 
 def commute_score(minutes: int) -> float:
     return _clamp(100.0 * (1.0 - minutes / COMMUTE_ZERO_MIN))
+
+
+def balance_score(minutes: list[int]) -> float:
+    """통근시간이 얼마나 고른가. 한 명만 가까운 집을 걸러내기 위한 값.
+
+    평균만 보면 [10분, 50분]과 [30분, 30분]이 같은 집으로 취급된다.
+    같이 사는 집에서는 후자가 분명히 낫다.
+    """
+    if len(minutes) < 2:
+        return 100.0
+    gap = max(minutes) - min(minutes)
+    return _clamp(100.0 * (1.0 - gap / BALANCE_ZERO_GAP_MIN))
 
 
 def evaluate(listing, minutes: list[int], price_range, area_range,
@@ -73,7 +97,9 @@ def evaluate(listing, minutes: list[int], price_range, area_range,
             people.append(Breakdown(round(price, 1), round(area, 1), round(cm, 1), round(total, 1)))
 
         avg = sum(p.total for p in people) / len(people)
-        joint = avg - FAIRNESS_PENALTY * abs(people[0].total - people[1].total)
+        bal = balance_score(minutes)
+        base = (avg * AVG_WEIGHT + bal * BALANCE_WEIGHT) / (AVG_WEIGHT + BALANCE_WEIGHT)
+        joint = base - FAIRNESS_PENALTY * abs(people[0].total - people[1].total)
 
         # 월세는 방 면적 비율로 나눈다(넓은 방이 더 낸다).
         span = sum(mine) or 1
@@ -81,5 +107,5 @@ def evaluate(listing, minutes: list[int], price_range, area_range,
         share = [s0, listing.rent_total - s0]
 
         if best is None or joint > best.joint:
-            best = Score(round(joint, 1), people, list(mine), share)
+            best = Score(round(joint, 1), people, list(mine), share, round(bal, 1))
     return best

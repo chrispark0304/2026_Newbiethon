@@ -41,9 +41,9 @@ def cmd_query(args):
     from .router import CommuteRouter
     r = CommuteRouter()
     wlat, wlon = _coord(args.work)
-    dist, parent = r.times_to(wlat, wlon)
+    field = r.times_to(wlat, wlon)
     hlat, hlon = _coord(args.home)
-    c = r.commute(hlat, hlon, dist, parent)
+    c = r.commute(hlat, hlon, field)
     if not c.reachable:
         print("경로 없음 (반경 내 정류장이 없거나 연결되지 않음)")
         return
@@ -65,14 +65,14 @@ def cmd_matrix(args):
                  for row in csv.DictReader(fp)]
 
     # ★ 직장 수만큼만 계산한다. 집 후보 개수와 무관.
-    fields = {name: r.times_to(lat, lon)[0] for name, lat, lon in works}
+    fields = {name: r.times_to(lat, lon) for name, lat, lon in works}
 
     w = csv.writer(sys.stdout)
     w.writerow(["home"] + [name for name, _, _ in works] + ["max", "sum"])
     for hname, hlat, hlon in homes:
         mins = []
         for name, _, _ in works:
-            c = r.commute(hlat, hlon, fields[name])
+            c = r.commute(hlat, hlon, fields[name], explain=False)
             mins.append(c.minutes if c.reachable else "")
         nums = [m for m in mins if m != ""]
         w.writerow([hname] + mins + [max(nums) if nums else "", sum(nums) if nums else ""])

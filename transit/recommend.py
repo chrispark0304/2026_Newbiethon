@@ -102,7 +102,7 @@ def recommend(
     r = router or CommuteRouter()
 
     # ① 직장 수만큼만 다익스트라를 돌린다. 후보 역 개수와 무관.
-    fields = [r.times_to(lat, lon)[0] for _, lat, lon in works]
+    fields = [r.times_to(lat, lon) for _, lat, lon in works]
 
     cands: list[Candidate] = []
     unreachable = 0
